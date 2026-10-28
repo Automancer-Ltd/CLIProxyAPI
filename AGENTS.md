@@ -4,6 +4,7 @@ Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with 
 
 ## Repository
 - GitHub: https://github.com/router-for-me/CLIProxyAPI
+- This checkout is the Automancer-Ltd fork. `gh` resolves to the upstream parent by default, so pass `--repo Automancer-Ltd/CLIProxyAPI` (or run `gh repo set-default Automancer-Ltd/CLIProxyAPI`) before `gh pr create`; a T3 docs PR landed upstream as router-for-me/CLIProxyAPI#7089 on 28 Oct 2026 and had to be closed.
 
 ## Commands
 ```bash
