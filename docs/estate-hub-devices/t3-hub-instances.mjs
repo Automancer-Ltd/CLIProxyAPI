@@ -11,7 +11,7 @@ if (!T3_TOKEN || !HUBKEY || !MGMT) throw new Error('need T3_TOKEN, HUBKEY and MG
 
 const env = (name, value, sensitive = false) => ({ name, value, sensitive });
 const key = env('HUB_ACCESS_KEY', HUBKEY, true);
-const claude = (extra = []) => [env('ANTHROPIC_BASE_URL', HUB), env('ANTHROPIC_AUTH_TOKEN', HUBKEY, true), env('ANTHROPIC_API_KEY', ''), ...extra];
+const claude = () => [env('ANTHROPIC_BASE_URL', HUB), env('ANTHROPIC_AUTH_TOKEN', HUBKEY, true), env('ANTHROPIC_API_KEY', '')];
 const claudeConfig = { homePath: `${H}/.config/t3-hub/claude` };
 
 const patch = {
@@ -20,8 +20,6 @@ const patch = {
     codex: { driver: 'codex', enabled: false },
     cursor: { driver: 'cursor', enabled: false },
     'claude-hub': { driver: 'claudeAgent', displayName: 'Claude (hub)', enabled: true, environment: claude(), config: claudeConfig },
-    'claude-hub-pinned': { driver: 'claudeAgent', displayName: 'Claude (hub, pinned)', enabled: true,
-      environment: claude([env('ANTHROPIC_CUSTOM_HEADERS', 'X-CPA-Account: 1')]), config: claudeConfig },
     'codex-hub': { driver: 'codex', displayName: 'Codex (hub)', enabled: true, environment: [key],
       config: { setupMode: 'existing', homePath: `${H}/.config/t3-hub/codex`, customModels: ['gpt-6.1-terra'] } },
     'pi-hub': { driver: 'pi', displayName: 'Pi (hub)', enabled: true, environment: [env('PI_CODING_AGENT_DIR', `${H}/.config/t3-hub/pi`), key] },
