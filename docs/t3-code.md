@@ -27,7 +27,7 @@ script and rerun it rather than changing one instance through the API.
 |---|---|---|---|
 | `claude-hub` | Claude (hub) | hub: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CONFIG_DIR=~/.config/t3-hub/claude` | T3's Claude list (Fable, Opus, Sonnet, Haiku) |
 | `codex-hub` | Codex (hub) | hub: `CODEX_HOME=~/.config/t3-hub/codex`, provider `cliproxy`, websockets on | Sol, Astra, Luna, and Terra as a custom model |
-| `pi-hub` | Pi (hub) | hub: `PI_CODING_AGENT_DIR=~/.config/t3-hub/pi`, provider `hub` only | the hub's 25 non-Claude models (`hub/kimi-k3`, `hub/glm-5.3-flash`, ...) |
+| `pi-hub` | Pi (hub) | hub: `PI_CODING_AGENT_DIR=~/.config/t3-hub/pi`, provider `hub` only | only hub models with no native provider in T3 (Waseem, 28 Oct): Kimi K3 and K3.1 Pro, DeepSeek Flash, GLM 5.3 Flash, the two CommandCode copies, Devin SWE-2 and Lightning, the four `local/*` models. The list lives in `~/.config/t3-hub/pi/models.json` (not the standalone pi's `~/.pi/agent`) |
 | `opencode` | OpenCode | hub provider from `OPENCODE_CONFIG=~/.config/t3-hub/opencode/opencode.json`, plus OpenCode's own logins | `hub/*`, `opencode/*` free models, `opencode-go/*` |
 | `grok` | Grok | its own login (`grok login` on auto-vps); Grok also covers the Cursor models, so there is no Cursor instance | `t3` lists them |
 | `muse` | Muse Code | its own login (`muse login` on auto-vps) | Wonder, Wonder Full, Spark |
