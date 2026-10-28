@@ -43,6 +43,14 @@ Defaults: new threads and all eight projects start on Claude (hub) Opus in Full 
 children inherit Full access. Thread titles and commit text use Codex (hub) Luna. Settings →
 Providers → Usage shows the hub's pooled limits (usage source `hub`, kind `cliproxy`).
 
+## OpenCode's keys
+
+OpenCode 2.2 keeps provider keys in its database (`~/.local/share/opencode/opencode.db`, table
+`credential`), not in `auth.json`; editing `auth.json` changes nothing. On 28 Oct 2026 the database
+held an expired OpenCode Go key while BWS `AUT_OPENCODE_GO_API_KEY` worked, so every Go model failed
+with "This API key has expired" (t9518). Replace a key with `opencode auth login opencode-go`
+(interactive), or write the BWS value into that row from a script that reads it from the environment.
+
 ## Which models each provider shows
 
 T3 keeps one hide list and order per instance on the server (`providerModelPreferences` in
