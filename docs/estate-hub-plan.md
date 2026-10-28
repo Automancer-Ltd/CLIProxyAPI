@@ -223,7 +223,7 @@ making 7.
 
 ## Device matrix (Waseem, 26 Oct 2026: "any agent from any device" by Tue 28 / Wed 29 Oct)
 
-Last verified: 28 Oct 2026 (m6, mbp, omarchy, wasnewpc). On mbp Waseem is signed in to Muse, agy, Devin, Grok and Kimi:
+Last verified: 28 Oct 2026 (m6, mbp, omarchy, wasnewpc; auto-vps after its cut-over, 21:08 UTC). On mbp Waseem is signed in to Muse, agy, Devin, Grok and Kimi:
 `devin auth status` and `grok models` report it, Muse and Kimi hold their credential files, agy is his word.
 
 Work devices only: wasnewpc, omarchy (same GPU box, Linux boot; one boot up at a time), mbp, m6. naz and the
@@ -231,21 +231,21 @@ Beelink HA box are excluded. Cell values: **hub** = points at m6 and works; **lo
 in on that device; **install** = not installed yet; **check** = installed, hub support unverified. Read with
 `command -v <tool>` on each device; auto-vps is the reference set (all fourteen installed, 26 Oct 2026).
 
-| Harness | m6 | wasnewpc | mbp | omarchy | Route |
-|---|---|---|---|---|---|
-| Claude Code | hub | hub | hub | hub | hub (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`) |
-| Codex | hub | hub | hub | hub | hub (`model_providers.cliproxy`) |
-| OMP | hub | hub | hub | hub | hub provider in `~/.omp/agent/models.json` (non-Claude models) |
-| pi | hub | hub | hub | hub | hub provider in `~/.pi/agent/models.json` |
-| opencode | hub | hub | hub (fixed 28 Oct: npm postinstall had not run, so the binary did not start) | hub | hub provider in `~/.config/opencode/opencode.json` |
-| Muse CLI | login (launcher installed 26 Oct) | login (Windows launcher installed 28 Oct, 1.4.14) | signed in (1.4.14) | login? (installed) | own login; Muse models via hub for the tools above |
-| agy (Antigravity) | login (installed 26 Oct) | login? (installed) | signed in (Waseem, 28 Oct; 1.4.9) | login (binary copied from auto-vps 26 Oct) | own login |
-| Devin CLI | login (installed 26 Oct) | login (installed 28 Oct, 3000.11.228) | signed in (installed 28 Oct, 3000.11.228) | login (binary copied from auto-vps 26 Oct) | own login; Devin models via hub for the tools above |
-| Grok CLI | hub (default) | hub (default; npm, 28 Oct) | hub (beside Waseem's own grok.com login, which stays default) | hub (default) | hub models in `~/.grok/config.toml` (see below) |
-| Kimi CLI | hub (default) | hub (default; 2.4.0, 28 Oct) | hub (beside Waseem's own Kimi login, which stays default; CLI is 0.20.3) | hub (default) | hub provider in `~/.kimi-code/config.toml` (see below) |
-| dsh (DeepSeek) | installed, key needed | installed, key needed | installed, key needed | installed (npm; mise cannot resolve its rc version), key needed | API key from BWS, or hub `deepseek-flash` through OMP/pi |
-| commandcode | installed, key needed | installed, key needed | installed, key needed | installed (mise), key needed | API key from BWS, or hub `commandcode/*` through OMP/pi |
-| cursor-agent / agent | install | install | installed | installed | own login (Cursor); no hub path |
+| Harness | m6 | wasnewpc | mbp | omarchy | auto-vps | Route |
+|---|---|---|---|---|---|---|
+| Claude Code | hub | hub | hub | hub | hub (28 Oct; fallback login Claude slot 1) | hub (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`) |
+| Codex | hub | hub | hub | hub | hub (28 Oct; fallback login pro-personal) | hub (`model_providers.cliproxy`) |
+| OMP | hub | hub | hub | hub | hub (`models.yml`) | hub provider in `~/.omp/agent/models.json` (non-Claude models) |
+| pi | hub | hub | hub | hub | hub | hub provider in `~/.pi/agent/models.json` |
+| opencode | hub | hub | hub (fixed 28 Oct: npm postinstall had not run, so the binary did not start) | hub | hub (`opencode.jsonc`) | hub provider in `~/.config/opencode/opencode.json` |
+| Muse CLI | login (launcher installed 26 Oct) | login (Windows launcher installed 28 Oct, 1.4.14) | signed in (1.4.14) | login? (installed) | own login through the UK tunnel (geo-gated; tunnel stays) | own login; Muse models via hub for the tools above |
+| agy (Antigravity) | login (installed 26 Oct) | login? (installed) | signed in (Waseem, 28 Oct; 1.4.9) | login (binary copied from auto-vps 26 Oct) | own login | own login |
+| Devin CLI | login (installed 26 Oct) | login (installed 28 Oct, 3000.11.228) | signed in (installed 28 Oct, 3000.11.228) | login (binary copied from auto-vps 26 Oct) | own login | own login; Devin models via hub for the tools above |
+| Grok CLI | hub (default) | hub (default; npm, 28 Oct) | hub (beside Waseem's own grok.com login, which stays default) | hub (default) | own login | hub models in `~/.grok/config.toml` (see below) |
+| Kimi CLI | hub (default) | hub (default; 2.4.0, 28 Oct) | hub (beside Waseem's own Kimi login, which stays default; CLI is 0.20.3) | hub (default) | own login | hub provider in `~/.kimi-code/config.toml` (see below) |
+| dsh (DeepSeek) | installed, key needed | installed, key needed | installed, key needed | installed (npm; mise cannot resolve its rc version), key needed | API key (BWS) | API key from BWS, or hub `deepseek-flash` through OMP/pi |
+| commandcode | installed, key needed | installed, key needed | installed, key needed | installed (mise), key needed | API key (BWS) | API key from BWS, or hub `commandcode/*` through OMP/pi |
+| cursor-agent / agent | install | install | installed | installed | installed | own login (Cursor); no hub path |
 
 Grok CLI and Kimi CLI both take a custom OpenAI-compatible endpoint, checked 28 Oct 2026 against Grok's
 `~/.grok/README.md` ("Custom Models") and Kimi's docs (`providers` in config.toml). Each device carries two hub
@@ -262,6 +262,14 @@ started from it cannot load `Get-FileHash`, so Devin's installer fails its check
 "login?" means installed but whether it is signed in on that device is unverified. Omarchy done 26 Oct 22:30: Claude Code, Codex, OMP, pi, opencode on the hub (all answered or list 25 hub models); Herdr there is the Arch package 0.9.1-2 in /usr/bin (update with the package manager, not `herdr update`); auto-vps saved in its machines. The GPU box is one machine: wasnewpc is unreachable while omarchy is booted and vice versa.
 
 ## auto-vps cut-over (t8306)
+
+**Done 28 Oct 2026, 20:50-21:08 UTC**, steps 0-8 verified, supervised by the bb canary, with no bb thread dropped
+(5b and 6 checked by hand: the runbook's grep under pipefail misread success; fixed). Then at 21:13 the hub was
+restarted on `estate-16a0cfb5` (11 s outage) with `pin_only`; Codex Team GDP is `pin_only: true` (priority cleared):
+a pinned request reached it and three unpinned ones went to Codex Pro Gmail. Standing state: the Muse CLI is
+geo-gated, so `muse-uk-tunnel` and `muse-uk-proxy` stay on auto-vps; pi and OMP reach Muse through the hub. Runbook
+and canary as run: automancer-ops `runbooks/estate-hub-cutover/`; flip-back: `estate-hub-route off`
+(automancer-ops `runbooks/vps-ops.md`, "auto-vps on the estate hub"). The checklist below is the record.
 
 Waseem's ruling (28 Oct 2026, through the chair): the auto-vps cut-over runs last, with him watching and
 not mid-session, after the home lanes finish. Nothing in it restarts bb; the account-pin release reloads
@@ -400,3 +408,4 @@ the local fallback login; running ones keep the route they started with.
 - 2026-10-28 19:28: L4 (one graphical table, `estate-2fe4a080`) live on m6; `/hub` 200 on the tailnet, traffic serving. Previous binary kept as `~/.local/hub/cliproxyapi.prev-estate-278f7e18` (roll back: move it over `cliproxyapi`, then `launchctl kickstart -k gui/$(id -u)/uk.automancer.hub`). Seen on deploy: the first spawn after swapping the binary failed with `OS_REASON_CODESIGNING`; launchd's KeepAlive retry started it within seconds (`codesign -v` passes). Screenshots: repo `docs/estate-hub-screens/v4-*.png` (account names and emails replaced, the fork is public); real ones in `Notes/Reports/assets/26-10-28-hub-v4-*.png`.
 - 2026-10-28 19:47: follow-up (`estate-19093a4d`, smooth bars, no chips, Devin polled) live on m6; previous binary kept as `~/.local/hub/cliproxyapi.prev-estate-2fe4a080`. Every binary swap so far has failed its first spawn with `OS_REASON_CODESIGNING`, even after an ad-hoc `codesign --force -s -`; launchd's KeepAlive retry starts it about 10 s later. Expect that gap, or try `launchctl bootout` then `bootstrap` next time. Screenshots: repo `docs/estate-hub-screens/v5-*.png` (redacted); real ones in `Notes/Reports/assets/26-10-28-hub-v5-*.png`.
 - 2026-10-28 20:30-21:10: T3 Code on auto-vps set up on the hub ([t3-code.md](t3-code.md)): Claude (hub), Claude (hub, pinned) on group 1, Codex (hub), Pi (hub) with the 25 hub models, OpenCode with the hub provider, Grok and Muse on their own logins; all answered a pong thread, and a Claude (hub) thread delegated to Codex (hub) and Pi (hub) Kimi children. Cursor dropped (Waseem: Grok and Cursor are one xAI subscription; Grok is the provider). Antigravity runtime installed; it waits on Waseem's Google sign-in in T3. Gandalf's route designed (a bearer-checked wrapper behind estate-gateway), not wired; bearer in BWS `AUT_T3_GANDALF_TOKEN`. The 0.1.3 rollback cause found (0.0.0.0 bind against Tailscale Serve); `T3CODE_HOST=127.0.0.1` drop-in added, update not retried. Linked environments needs the nightly train.
+- 2026-10-28 21:08: auto-vps cut over (t8306). Claude Code, Codex, pi, OMP, opencode on the hub; allowances reads the hub; bb pins go through `X-CPA-Account` (account-pin 07e7d11); cswap-auto and cxswap-auto stopped (binaries kept 7 days); fallback logins Claude slot 1 and Codex pro-personal. Muse CLI geo-gated: UK tunnel stays. Gandalf's `hub-readonly` Executor app deployed (apps beta.116, app-scope account), waiting on Waseem's Access-token connect. 21:13: hub `estate-16a0cfb5` with `pin_only`, Codex Team GDP pin-only.
