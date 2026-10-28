@@ -5,7 +5,7 @@ through the estate hub does: one Claude instance and one Codex instance, both on
 several accounts inside T3 (Waseem, 28 Oct 2026, following Theo's advice in
 [theo-gist-2026-10.md](theo-gist-2026-10.md)). Every thread runs in **Full access**.
 
-Last verified: 2026-10-28 on auto-vps (T3 0.1.2). Each instance below answered a one-word thread
+Last verified: 2026-10-28 on auto-vps (T3 0.1.2; moved to the nightly train 22:05, see Updates). Each instance below answered a one-word thread
 started with `t3 thread start . "Reply with the single word pong" --provider <id> --model <model> --wait`.
 
 ## Where things are
@@ -26,7 +26,6 @@ script and rerun it rather than changing one instance through the API.
 | Instance id | Name in T3 | Reaches models through | Models |
 |---|---|---|---|
 | `claude-hub` | Claude (hub) | hub: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CONFIG_DIR=~/.config/t3-hub/claude` | T3's Claude list (Fable, Opus, Sonnet, Haiku) |
-| `claude-hub-pinned` | Claude (hub, pinned) | as above, plus `ANTHROPIC_CUSTOM_HEADERS=X-CPA-Account: 1` | same |
 | `codex-hub` | Codex (hub) | hub: `CODEX_HOME=~/.config/t3-hub/codex`, provider `cliproxy`, websockets on | Sol, Astra, Luna, and Terra as a custom model |
 | `pi-hub` | Pi (hub) | hub: `PI_CODING_AGENT_DIR=~/.config/t3-hub/pi`, provider `hub` only | the hub's 25 non-Claude models (`hub/kimi-k3`, `hub/glm-5.3-flash`, ...) |
 | `opencode` | OpenCode | hub provider from `OPENCODE_CONFIG=~/.config/t3-hub/opencode/opencode.json`, plus OpenCode's own logins | `hub/*`, `opencode/*` free models, `opencode-go/*` |
@@ -46,14 +45,8 @@ Providers → Usage shows the hub's pooled limits (usage source `hub`, kind `cli
 ## Pins
 
 The hub's `X-CPA-Account` header picks an account or group ([estate-hub.md](estate-hub.md#account-pins)).
-T3 has no per-thread environment, so a pin is a property of an instance:
-
-- Claude: pick **Claude (hub, pinned)**. It pins group `1`. To pin another group, change
-  `ANTHROPIC_CUSTOM_HEADERS` in the script and rerun it, or add another pinned instance there.
-- Codex: the `cliproxy` provider maps the header from `CODEX_HUB_ACCOUNT`. A pinned Codex instance is
-  a copy of `codex-hub` in the script with `CODEX_HUB_ACCOUNT=<group>` added to its environment.
-
-A thread can switch between Claude (hub) and Claude (hub, pinned) because they share a config dir.
+T3 has no per-thread environment, so a pin would be a whole extra instance. There is none: Waseem
+wants one Claude and one Codex instance (28 Oct 2026), and the hub chooses the account.
 
 ## Delegation
 
@@ -96,13 +89,24 @@ T3 session, so it never expires and T3 never asks for approval. The chair wires 
   on the tailnet), Settings → Providers → Antigravity → **Sign in**, choose Google, finish in the
   browser. Until then its threads fail with "Sign in to Antigravity in Settings".
 
+## Clients
+
+Every client is the T3 desktop app paired to auto-vps (`t3 pair --label <device> --ttl 30m`, then the
+pairing URL with `localhost` swapped for `automancer-vps.taild6c90e.ts.net` pasted into Settings →
+Connections → Add environment). Live list: `t3 auth session list`. Paired: m6, mbp, wasnewpc,
+omarchy (AUR `t3code-nightly-bin`; launched over SSH it needs `--ozone-platform=wayland` and
+`WAYLAND_DISPLAY=wayland-1`).
+
 ## Updates and versions
 
-`t3 update` to 0.1.3 rolled back on 27 and 28 Oct (`~/.t3/runtime/service-state.json`): 0.1.3 binds
-`0.0.0.0` when run as a managed service, and Tailscale Serve already holds the tailnet address on
-:3773 (`EADDRINUSE`). The drop-in `~/.config/systemd/user/t3code.service.d/host.conf` sets
-`T3CODE_HOST=127.0.0.1`, so the next update should start; it has not been retried.
+auto-vps follows the **nightly** channel since 28 Oct 2026 22:05 (`t3 update --channel nightly --yes`),
+for two features stable lacks: model hide/order/favourites stored on the server, so one choice applies
+on every client, and linked environments (Settings → Labs). Clients should run the nightly desktop
+app too; a stable client keeps its own model list. Before the switch, `~/.t3/userdata` was saved to
+`/opt/automancer/var/scratch/t3-backup-20261028-2202/`. To go back: `t3 update --channel stable
+--allow-downgrade --yes`.
 
-Linked environments (one T3 driving another machine's threads, Settings → Labs) is not in 0.1.2 or
-0.1.3 stable. It first ships in the nightly train (`v0.1.4-nightly.20261027.3796`). 0.1.3's Labs page
-only has Guest links. Switching auto-vps to nightly is the chair's call (`t3 update --channel nightly`).
+The earlier 0.1.3 rollbacks (27 and 28 Oct) came from 0.1.3 binding `0.0.0.0` as a managed service
+while Tailscale Serve holds the tailnet address on :3773 (`EADDRINUSE`). The drop-in
+`~/.config/systemd/user/t3code.service.d/host.conf` sets `T3CODE_HOST=127.0.0.1`; with it the
+nightly update started first time.
