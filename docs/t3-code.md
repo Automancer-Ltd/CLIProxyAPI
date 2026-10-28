@@ -95,11 +95,11 @@ So the route is a small wrapper on auto-vps:
 BWS `AUT_T3_GANDALF_TOKEN` (project personal) holds the wrapper's bearer. It is a random value, not a
 T3 session, so it never expires and T3 never asks for approval. The chair wires it after Waseem's trial.
 
-## Still needs Waseem
+## Sign-ins
 
-- **Antigravity sign-in**: open T3 (desktop app, or `https://automancer-vps.taild6c90e.ts.net:3773`
-  on the tailnet), Settings → Providers → Antigravity → **Sign in**, choose Google, finish in the
-  browser. Until then its threads fail with "Sign in to Antigravity in Settings".
+Antigravity is signed in with Waseem's Google account (checked 28 Oct 2026 22:35: status
+authenticated, a Gemini 3.8 Flash thread answered). If it signs out: Settings → Providers →
+Antigravity → **Sign in**, choose Google, finish in the browser.
 
 ## Clients
 
