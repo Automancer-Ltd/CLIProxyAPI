@@ -27,8 +27,9 @@ script and rerun it rather than changing one instance through the API.
 |---|---|---|---|
 | `claude-hub` | Claude (hub) | hub: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CONFIG_DIR=~/.config/t3-hub/claude` | T3's Claude list (Fable, Opus, Sonnet, Haiku) |
 | `codex-hub` | Codex (hub) | hub: `CODEX_HOME=~/.config/t3-hub/codex`, provider `cliproxy`, websockets on | Sol, Astra, Luna, and Terra as a custom model |
-| `pi-hub` | Pi (hub) | hub: `PI_CODING_AGENT_DIR=~/.config/t3-hub/pi`, provider `hub` only | only hub models with no native provider in T3 (Waseem, 28 Oct): Kimi K3 and K3.1 Pro, DeepSeek Flash, GLM 5.3 Flash, the two CommandCode copies, Devin SWE-2 and Lightning, the four `local/*` models. The list lives in `~/.config/t3-hub/pi/models.json` (not the standalone pi's `~/.pi/agent`) |
-| `opencode` | OpenCode | hub provider from `OPENCODE_CONFIG=~/.config/t3-hub/opencode/opencode.json`, plus OpenCode's own logins | `hub/*`, `opencode/*` free models, `opencode-go/*` |
+| `pi-hub` | Pi (hub) | hub: `PI_CODING_AGENT_DIR=~/.config/t3-hub/pi`, provider `hub` only | only hub models with no native provider in T3 (Waseem, 28 Oct): DeepSeek Flash (the default, DeepSeek pay-as-you-go), GLM 5.3 Flash, the two CommandCode copies, Devin SWE-2 and Lightning, the four `local/*` models. List and default in `~/.config/t3-hub/pi/{models,settings}.json` (not the standalone pi's `~/.pi/agent`) |
+| `opencode` | OpenCode | OpenCode's own logins (Zen free models, OpenCode Go). OpenCode 2.2 ignores `OPENCODE_CONFIG`, so it also loads the hub provider from the global `~/.config/opencode/opencode.jsonc` | eight shown (Waseem, 28 Oct): Beam Free, DeepSeek V4.1 Flash (Go) and Free, GLM 5.3 Flash (Go) and Free, Nemotron 3.5 Lightning Free and Super VL Free, Qwen3.8 Flash (Go); the rest hidden in T3 |
+| `kimi-hub` | Kimi (hub) | Kimi CLI as a local ACP command (`kimi acp`), `KIMI_CODE_HOME=~/.config/t3-hub/kimi` with the hub as its only provider ([t3-kimi-config.toml](estate-hub-devices/t3-kimi-config.toml)) | K3, K3.1 Pro |
 | `grok` | Grok | its own login (`grok login` on auto-vps); Grok also covers the Cursor models, so there is no Cursor instance | `t3` lists them |
 | `muse` | Muse Code | its own login (`muse login` on auto-vps) | Wonder, Wonder Full, Spark |
 | `antigravity` | Antigravity | T3's managed Antigravity runtime and its own Google sign-in (not the `agy` CLI's login) | listed after sign-in |
@@ -41,6 +42,17 @@ config dirs link back to Waseem's instructions, skills, hooks and plugins in `~/
 Defaults: new threads and all eight projects start on Claude (hub) Opus in Full access; delegated
 children inherit Full access. Thread titles and commit text use Codex (hub) Luna. Settings →
 Providers → Usage shows the hub's pooled limits (usage source `hub`, kind `cliproxy`).
+
+## Which models each provider shows
+
+T3 keeps one hide list and order per instance on the server (`providerModelPreferences` in
+`~/.t3/userdata/settings.json`), so a change applies on every client running the nightly app. Change
+it in Settings → Providers → Models. A hide list is a deny list: a model a provider adds later
+appears until it is hidden. Pi and Kimi are different: their lists are the config files above.
+
+A model leaves Pi when it gets a native provider in T3 that reaches the hub. Devin's CLI only talks
+to Cognition's servers, so Devin's models stay in Pi. The ACP Registry's GLM agent is a third-party
+build, and DeepSeek Harness (`dsh`) is not installed, so those stay in Pi too.
 
 ## Pins
 
