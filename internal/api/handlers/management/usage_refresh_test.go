@@ -16,7 +16,7 @@ import (
 
 // A polled Claude account must rank on its weekly reset, and keep that rank after
 // a restart instead of falling back to "unknown" until it serves a request.
-func TestUsageRefreshPollsAndSurvivesRestart(t *testing.T) {
+func TestUsageRefreshPollsDisabledAndSurvivesRestart(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	now := time.Now()
 	weeklyReset := now.Add(72 * time.Hour).Truncate(time.Second)
@@ -40,7 +40,7 @@ func TestUsageRefreshPollsAndSurvivesRestart(t *testing.T) {
 	newHandler := func() (*Handler, *coreauth.Manager) {
 		manager := coreauth.NewManager(nil, nil, nil)
 		if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
-			ID: "claude-a.json", Provider: "claude", Metadata: map[string]any{"access_token": "access"},
+			ID: "claude-a.json", Provider: "claude", Disabled: true, Metadata: map[string]any{"access_token": "access"},
 		}); errRegister != nil {
 			t.Fatalf("register: %v", errRegister)
 		}
@@ -49,6 +49,9 @@ func TestUsageRefreshPollsAndSurvivesRestart(t *testing.T) {
 	assertStanding := func(manager *coreauth.Manager) {
 		t.Helper()
 		auth, _ := manager.GetByID("claude-a.json")
+		if !auth.Disabled {
+			t.Fatal("reading usage must not enable a disabled account")
+		}
 		resetAt, used, spent := coreauth.ConsumeFirstStanding(auth, now)
 		if !resetAt.Equal(weeklyReset) || math.Abs(used-40) > 0.001 || spent {
 			t.Fatalf("standing = (%v, %v, %v), want (%v, 40, false)", resetAt, used, spent, weeklyReset)
