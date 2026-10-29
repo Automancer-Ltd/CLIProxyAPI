@@ -292,7 +292,6 @@ function rowName(r) {
 // then soonest reset, least used, id (docs/estate-hub.md, "Reading the state").
 function order(x, y) {
   if (!!x.blocker !== !!y.blocker) return x.blocker ? 1 : -1;
-  if ((y.a.priority || 0) !== (x.a.priority || 0)) return (y.a.priority || 0) - (x.a.priority || 0);
   if (x.spent !== y.spent) return x.spent ? 1 : -1;
   if (!!x.reset !== !!y.reset) return x.reset ? -1 : 1;
   if (x.reset && +x.reset !== +y.reset) return x.reset - y.reset;
@@ -436,9 +435,13 @@ function render() {
     rows.push(...rowsOf(a));
   }
   rows.sort(order);
-  // The router's next account per provider: its first usable, unspent row.
+  // Routing priorities choose within a provider; they do not order the whole dashboard.
   const next = new Map();
-  if (consumeFirst) for (const r of rows) if (!r.blocker && !r.spent && !next.has(r.provider)) next.set(r.provider, r);
+  if (consumeFirst) for (const r of rows) {
+    if (r.blocker || r.spent || r.a.pin_only) continue;
+    const current = next.get(r.provider);
+    if (!current || (r.a.priority || 0) > (current.a.priority || 0)) next.set(r.provider, r);
+  }
   const open = new Set([...document.querySelectorAll("details.acct[open]")].map((d) => d.dataset.id));
   const accounts = (p) => new Set(rows.filter((r) => r.provider === p).map((r) => r.a.id)).size;
   const many = new Set([...next.keys()].filter((p) => accounts(p) > 1));

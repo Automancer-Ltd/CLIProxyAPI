@@ -146,7 +146,7 @@ func (h *Handler) refreshUsage(ctx context.Context, now time.Time) {
 		// An account serving traffic already reports its own headers.
 		busy := observes && now.Sub(observed) < every &&
 			!(kind == "codex" && now.Sub(record.AttemptedAt) >= usageBankedFloor)
-		due := fetch != nil && !auth.Disabled && usageProviderEnabled(cfg, kind) && now.Sub(record.AttemptedAt) >= every && !busy
+		due := fetch != nil && usageProviderEnabled(cfg, kind) && now.Sub(record.AttemptedAt) >= every && !busy
 		if due {
 			record = h.pollUsage(ctx, auth, fetch, record, now)
 			changed = true

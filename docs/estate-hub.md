@@ -77,8 +77,8 @@ routing:
 - An account is polled when its last poll is older than `interval` and, for Claude and Codex, it has
   not returned quota headers within `interval` either. A Codex account that keeps serving traffic is
   still polled once an hour, because its banked resets only come from the poll. Disabled accounts are
-  not polled. Muse is polled at most every three hours whatever the interval: Meta locks out a login
-  that is polled often.
+  also polled for visibility; polling never enables them for requests. Muse is polled at most every
+  three hours whatever the interval: Meta locks out a login that is polled often.
 - API keys from the config file (`openai-compatibility`) are polled when their `base-url` points at
   a service with a usage endpoint: `api.deepseek.com` (`deepseek`), `*.commandcode.ai`
   (`commandcode`), `api.z.ai` or `open.bigmodel.cn` (`zai`, the GLM coding plan) and
@@ -133,7 +133,9 @@ row per model pool, as `allowances` shows it.
 
 The order across all providers is consume-first's: usable rows by soonest reset, then rows with no
 reset, then spent rows (any window at 95% or more used, showing when they are back), then held,
-cooling and disabled rows at the bottom. Within a provider this is the router's own order.
+cooling and disabled rows at the bottom. Routing priorities apply within a provider and do not
+move its rows ahead of other providers on the page. The **Next** tag respects those priorities and
+excludes accounts reserved for pinned requests.
 
 Tapping a row opens each window with its reset and pace, then plan, login, balance, banked resets,
 groups, cooldowns, recent requests and the age of the figures, then the actions: hold (1 hour,
