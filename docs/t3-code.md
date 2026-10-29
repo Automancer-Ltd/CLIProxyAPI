@@ -76,6 +76,20 @@ Any T3 agent can start children on other instances with the `delegate_task` tool
 threads. The hub log on m6 showed the parent on Claude Gmail Max 20, the Codex child on Codex Pro
 Gmail and the Pi child on the Kimi login (`ssh m6 grep "new binding" ~/Library/Logs/hub.log`).
 
+## The `t3 thread` command line
+
+Checked 29 Oct 2026 on nightly 0.1.4 (`t3 thread --help` for the current flags):
+
+- `start` takes `--provider` and `--model` but no effort option, and does not use the project's default model
+  selection: a thread started without them came up on Claude (hub) Opus. To set effort, the thread's first turn calls
+  the T3 tool `t3_thread_configure` on itself (no `threadId`); its options apply from the next turn.
+- `show --json` nests the state under `.thread.status` (`running`, `completed`, ...). An archived thread answers "no
+  longer available".
+- There is no stop or archive command. Threads started this way still get T3's own tools (`delegate_task`,
+  `t3_thread_*`), so a thread can archive itself with `t3_thread_organize`.
+- Gandalf's chairs use exactly this: chief-of-staff `scripts/agents/chairs.mjs`, reached over ssh through the cos-helper
+  gate, which is his route to T3 until the wrapper below exists.
+
 ## Gandalf's route (designed, not wired)
 
 Gandalf runs in a Cloudflare Durable Object, not on auto-vps. He reaches auto-vps services through
