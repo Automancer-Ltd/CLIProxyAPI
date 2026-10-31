@@ -90,6 +90,14 @@ Checked 29 Oct 2026 on nightly 0.1.4 (`t3 thread --help` for the current flags):
 - Gandalf's chairs use exactly this: chief-of-staff `scripts/agents/chairs.mjs`, reached over ssh through the cos-helper
   gate, which is his route to T3 until the wrapper below exists.
 
+## Did the automations run?
+
+Scheduled tasks live in `~/.t3/userdata/statev2.sqlite` (open it read-only: `sqlite3 "file:...?mode=ro"`). The
+`scheduled_tasks.last_run_status` column says `succeeded` once the turn is queued, even when the agent run then fails.
+The real result is `orchestration_v2_projection_runs.status` (`completed`, `failed`, `running`, `queued`) for runs on
+the task's thread. On 31 Oct, while m6 was off the tailnet, every run said `succeeded` in `scheduled_tasks` and
+`failed` after about 28 minutes of retries in the runs table (t11539).
+
 ## Gandalf's route (designed, not wired)
 
 Gandalf runs in a Cloudflare Durable Object, not on auto-vps. He reaches auto-vps services through
