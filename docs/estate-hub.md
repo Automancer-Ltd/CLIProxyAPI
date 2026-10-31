@@ -28,8 +28,8 @@ Among the accounts that can serve the request right now (not cooling down after 
 disabled, not held, matching any pin), it picks the first by:
 
 1. **Not spent before spent.** An account is spent when any observed window (5-hour or weekly) is
-   at 95% or more. Spent accounts are still used as a last resort; the upstream 429 cooldown is
-   what removes them entirely.
+   at 95% or more. Spent accounts are still used as a last resort until a window reaches 100%;
+   then the paid-credits guard (below) removes them.
 2. **Known reset before unknown.** The rank uses the account's longest window: weekly for Claude
    (`7d`), and for Codex whichever of primary/secondary has the longer `window-minutes`.
 3. **Soonest weekly reset first.** That allowance is the one about to be lost.
@@ -55,7 +55,8 @@ only when its account starts cooling down, is held, disabled, or excluded by a p
   spent line and the same "window not started" rule.
 - No 5-minute reset margin: the hub chooses per new conversation, not by moving a shared pointer,
   so there is nothing to ping-pong.
-- Spent accounts are a last resort rather than refused; the hub only refuses on a real 429.
+- Spent accounts are a last resort rather than refused, up to 100%; past that the paid-credits
+  guard refuses them.
 - Usage comes from the hub's own traffic and, when the usage refresher is on, from the providers'
   usage endpoints for idle accounts (see below). Without the refresher the snapshot is in memory
   only, so after a restart each account is "unknown" until it serves a request.
@@ -163,6 +164,32 @@ curl -X PATCH "$HUB/v8/management/credentials/fields" \
 Clear it with `"hold_until": null` (or any time in the past). The value must be RFC3339; a value
 that does not parse is ignored. For an open-ended hold use the existing `disabled` flag
 (`PATCH /v8/management/credentials/status` with `{"name": "...", "disabled": true}`).
+
+## Paid-credits guard
+
+Once an included window is used up, the provider keeps answering if the account can pay: a Codex
+account with credits (a Team workspace's credits, a Pro account's credit balance) or a Claude
+account with extra usage. Each such answer is billed. Waseem allows no paid fallback, so while
+any observed window of an account reads **100% used and has not reset**, the hub routes nothing to
+it: unpinned traffic goes to another account, and a pin is refused with 429, `Retry-After` set to
+the reset, and the reason `included allowance used up until <reset> (paid credits refused)`.
+Found on 29 Oct 2026, when Codex Team GDP served about 690 requests after its weekly window read
+100% and its workspace credits then read 0 (t9765).
+
+The figures are the quota headers the account last returned, or the usage refresher's poll. A
+guarded account serves no traffic, so the refresher polls it every `interval`, and an early reset
+(a redeemed banked reset) lifts the guard at the next poll.
+
+**Undo, per account:** `"allow_credits": true` in the auth JSON, or live:
+
+```bash
+curl -X PATCH "$HUB/v8/management/credentials/fields" \
+  -H "Authorization: Bearer $MANAGEMENT_KEY" -H "Content-Type: application/json" \
+  -d '{"name": "<auth file name>", "allow_credits": true}'
+```
+
+Remove it again with `"allow_credits": null`. The credential listing shows `"allow_credits": true`
+while it is set. Rolling back the whole guard means deploying the previous binary.
 
 ## Account pins
 

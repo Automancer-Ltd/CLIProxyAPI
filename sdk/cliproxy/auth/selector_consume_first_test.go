@@ -238,3 +238,60 @@ func TestPinOnlyAccountServesPinsAndNeverUnpinnedTraffic(t *testing.T) {
 		t.Fatalf("Execute(pin=team) on a held pin-only account = %v; want 429 held until", errExec)
 	}
 }
+
+// A Codex account whose weekly window reads 100% keeps answering when its workspace
+// has credits, and each answer is billed (t9765). The hub must stop routing to it,
+// pinned or not, until the window resets or allow_credits is set.
+func TestSpentIncludedAllowanceRefusesPaidCredits(t *testing.T) {
+	const model = "codex-credits-guard-test-model"
+	now := time.Now()
+	codexAuth := func(id, group string, used int) *Auth {
+		return &Auth{ID: id, Provider: "codex", Metadata: map[string]any{MetadataGroup: group},
+			Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+				"X-Codex-Primary-Used-Percent":   strconv.Itoa(used),
+				"X-Codex-Primary-Window-Minutes": "10080",
+				"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
+				"X-Codex-Credits-Has-Credits":    "True",
+			}}}
+	}
+	// The spent account resets sooner, so consume-first alone would still use it last-resort.
+	team := codexAuth("credits-team", "team", 100)
+	pro := codexAuth("credits-pro", "pro", 50)
+	pro.Quota.Signals["X-Codex-Primary-Reset-At"] = strconv.FormatInt(now.Add(72*time.Hour).Unix(), 10)
+
+	m := NewManager(nil, &ConsumeFirstSelector{}, nil)
+	m.RegisterExecutor(&authFallbackExecutor{id: "codex"})
+	reg := registry.GetGlobalRegistry()
+	for _, auth := range []*Auth{team, pro} {
+		reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: model}})
+		t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+		if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register %s: %v", auth.ID, errRegister)
+		}
+	}
+	execute := func(pin string) (string, error) {
+		opts := cliproxyexecutor.Options{}
+		if pin != "" {
+			opts.Metadata = map[string]any{cliproxyexecutor.AccountPinMetadataKey: pin}
+		}
+		resp, errExec := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, opts)
+		return string(resp.Payload), errExec
+	}
+
+	if got, errExec := execute(""); errExec != nil || got != pro.ID {
+		t.Fatalf("unpinned Execute = %q, %v; want %q (spent account skipped)", got, errExec, pro.ID)
+	}
+	_, errExec := execute("team")
+	var refusal *accountPinError
+	if !errors.As(errExec, &refusal) || refusal.StatusCode() != http.StatusTooManyRequests || !strings.Contains(refusal.Error(), "paid credits refused") {
+		t.Fatalf("Execute(pin=team) on a spent account = %v; want 429 paid credits refused", errExec)
+	}
+
+	team.Metadata[MetadataAllowCredits] = true
+	if _, errUpdate := m.Update(context.Background(), team); errUpdate != nil {
+		t.Fatalf("update team: %v", errUpdate)
+	}
+	if got, errExec := execute("team"); errExec != nil || got != team.ID {
+		t.Fatalf("Execute(pin=team) with allow_credits = %q, %v; want %q", got, errExec, team.ID)
+	}
+}
