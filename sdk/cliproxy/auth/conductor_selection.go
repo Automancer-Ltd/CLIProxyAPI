@@ -134,7 +134,11 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if e.accountPin == "" && AuthPinOnly(auth) {
 		return false
 	}
-	if _, held := authHoldUntil(auth, time.Now()); held {
+	now := time.Now()
+	if _, held := authHoldUntil(auth, now); held {
+		return false
+	}
+	if _, spent := authIncludedSpentUntil(auth, now); spent {
 		return false
 	}
 	return !e.disallowFreeAuth || !isFreeCodexAuth(auth)

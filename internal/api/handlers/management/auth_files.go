@@ -700,6 +700,9 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	if coreauth.AuthPinOnly(auth) {
 		entry[coreauth.MetadataPinOnly] = true
 	}
+	if coreauth.AuthAllowCredits(auth) {
+		entry[coreauth.MetadataAllowCredits] = true
+	}
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas
 	}
