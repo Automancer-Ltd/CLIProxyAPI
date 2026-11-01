@@ -101,8 +101,9 @@ func AuthCreditBalance(auth *Auth, now time.Time) (float64, bool) {
 }
 
 // authCreditsAboveFloor reports whether the account may spend its credit balance:
-// a floor is set and a recent balance is above it. Spending between readings is not
-// reserved, so the floor must cover what the account can spend in CreditReadingMaxAge.
+// a floor is set and a recent balance is above it. Traffic lowers the reading
+// (trackCreditSpend); requests still in flight are not counted, so the floor must cover
+// what the account's concurrent requests can spend.
 func authCreditsAboveFloor(auth *Auth, now time.Time) bool {
 	floor, okFloor := AuthCreditsFloor(auth)
 	if !okFloor {
@@ -136,16 +137,46 @@ func authIncludedSpentUntil(auth *Auth, now time.Time) (time.Time, bool) {
 	if auth == nil || AuthAllowCredits(auth) {
 		return time.Time{}, false
 	}
-	var until time.Time
-	for _, window := range quotaWindowsFromSignals(auth.Quota.Signals, auth.Quota.ObservedAt) {
-		if window.used >= 100 && window.resetAt.After(now) && window.resetAt.After(until) {
-			until = window.resetAt
-		}
-	}
+	until := includedExhaustedUntil(auth.Quota, now)
 	if until.IsZero() || authCreditsAboveFloor(auth, now) {
 		return time.Time{}, false
 	}
 	return until, true
+}
+
+// includedExhaustedUntil returns the latest reset among the observed windows that are
+// fully used and not yet reset, or zero when none is.
+func includedExhaustedUntil(quota QuotaState, now time.Time) time.Time {
+	var until time.Time
+	for _, window := range quotaWindowsFromSignals(quota.Signals, quota.ObservedAt) {
+		if window.used >= 100 && window.resetAt.After(now) && window.resetAt.After(until) {
+			until = window.resetAt
+		}
+	}
+	return until
+}
+
+// CreditReservationPerResponse is deducted from the credit reading for each Codex
+// response served past the included allowance that reports no balance of its own, so
+// the reading cannot authorise unlimited requests until the next poll.
+const CreditReservationPerResponse = 5.0
+
+// trackCreditSpend lowers the poll's credit reading as traffic spends it: to the
+// balance a response reports when that is lower, otherwise by
+// CreditReservationPerResponse while the included allowance is used up. It never
+// raises the reading; only a newer poll does (ObserveCredits).
+func (q *QuotaState) trackCreditSpend(provider string, headers http.Header, now time.Time) {
+	if q == nil || q.Credits.ReadAt.IsZero() || !strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		return
+	}
+	if reported, errParse := strconv.ParseFloat(strings.TrimSpace(headers.Get("X-Codex-Credits-Balance")), 64); errParse == nil &&
+		!math.IsNaN(reported) && !math.IsInf(reported, 0) {
+		q.Credits.Balance = math.Min(q.Credits.Balance, reported)
+		return
+	}
+	if !includedExhaustedUntil(*q, now).IsZero() {
+		q.Credits.Balance -= CreditReservationPerResponse
+	}
 }
 
 func accountPinFromMetadata(meta map[string]any) string {

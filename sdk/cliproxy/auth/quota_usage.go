@@ -45,12 +45,24 @@ func (m *Manager) ObserveQuota(id string, headers http.Header, observedAt time.T
 		return false
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	auth, ok := m.auths[id]
-	if !ok || auth == nil || !observedAt.After(auth.Quota.ObservedAt) {
+	if !ok || auth == nil || !observedAt.After(auth.Quota.ObservedAt) ||
+		!auth.Quota.ObserveResponseHeadersForProvider(auth.Provider, headers, observedAt) {
+		m.mu.Unlock()
 		return false
 	}
-	return auth.Quota.ObserveResponseHeadersForProvider(auth.Provider, headers, observedAt)
+	snapshot := auth.Clone()
+	m.mu.Unlock()
+	m.publishQuotaSnapshot(snapshot)
+	return true
+}
+
+// publishQuotaSnapshot hands a quota change to the scheduler, whose strategies pick
+// from their own snapshots, so the paid-credits guard sees the same figures there.
+func (m *Manager) publishQuotaSnapshot(snapshot *Auth) {
+	if m.scheduler != nil && snapshot != nil {
+		m.scheduler.upsertAuth(snapshot)
+	}
 }
 
 // ObserveCredits records a usage poll's credit reading. A reading no newer than the
@@ -60,11 +72,14 @@ func (m *Manager) ObserveCredits(id string, reading CreditReading) bool {
 		return false
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	auth, ok := m.auths[id]
 	if !ok || auth == nil || !reading.ReadAt.After(auth.Quota.Credits.ReadAt) {
+		m.mu.Unlock()
 		return false
 	}
 	auth.Quota.Credits = reading
+	snapshot := auth.Clone()
+	m.mu.Unlock()
+	m.publishQuotaSnapshot(snapshot)
 	return true
 }

@@ -216,12 +216,15 @@ The floor is the cap: the hub spends at most the balance above it. It ranks afte
 that still has included allowance, spent or not, so consume-first uses every included window first
 and the credits last.
 
-The guard trusts only the usage poll's reading of `wham/usage` (`credits.balance`), never the
-`x-codex-credits-*` headers on traffic, and only for 30 minutes after the read. An account with a
+The guard starts from the usage poll's reading of `wham/usage` (`credits.balance`) and trusts it
+for 30 minutes after the read. An account with a
 floor is polled every `interval` even while it serves traffic, so with the estate's 10 minutes a
 reading is never more than about 11 minutes old; with the refresher off, or an interval over 30
-minutes, the account is always refused. Spending between two readings is not reserved, so set the
-floor above what the account can spend in 30 minutes (the estate uses 2,000 credits). The listing
+minutes, the account is always refused. Until the next poll, traffic only lowers the reading: a
+response that reports a lower `x-codex-credits-balance` replaces it, and a response served past the
+included allowance with no balance of its own takes 5 credits off it. A newer poll replaces it.
+Requests still in flight are not counted, so set the floor above what the account's concurrent
+requests can spend (the estate uses 2,000 credits). The listing
 shows the floor as `"credits_floor": <number>` and the last reading as `usage.balance`
 (`{"left": ..., "currency": "credits"}`), which `allowances` prints. Remove the floor with
 `"credits_floor": null`; the account is then guarded as before.

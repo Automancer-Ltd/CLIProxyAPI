@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -356,6 +357,73 @@ func TestCreditsFloorSpendsGrantedCreditsDownToTheFloor(t *testing.T) {
 		if got := served(); got != step.want {
 			t.Fatalf("%s: served = %v; want %v", step.name, got, step.want)
 		}
+	}
+
+	// Traffic lowers the reading until the next poll: each response without a
+	// balance reserves CreditReservationPerResponse, and a reported balance that is
+	// lower replaces it.
+	respond := func(headers http.Header) {
+		ctx := internallogging.WithResponseHeadersHolder(context.Background())
+		internallogging.SetResponseHeaders(ctx, headers)
+		m.MarkResult(ctx, Result{AuthID: spent.ID, Provider: "codex", Model: model, Success: true})
+	}
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now})
+	for i := 0; i < 99; i++ {
+		respond(http.Header{})
+	}
+	if !served() {
+		t.Fatal("1500 less 99 reservations: refused; want served")
+	}
+	respond(http.Header{})
+	if served() {
+		t.Fatal("1500 less 100 reservations reaches the floor: served; want refused")
+	}
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now.Add(time.Second)})
+	respond(http.Header{
+		"X-Codex-Primary-Used-Percent":   []string{"100"},
+		"X-Codex-Primary-Window-Minutes": []string{"10080"},
+		"X-Codex-Primary-Reset-At":       []string{strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10)},
+		"X-Codex-Credits-Balance":        []string{"950"},
+	})
+	if served() {
+		t.Fatal("response reporting 950: served; want refused")
+	}
+}
+
+// Round-robin and fill-first pick from the scheduler's snapshots, so a poll reading
+// must reach them too (t10647 review).
+func TestCreditReadingReachesSchedulerStrategies(t *testing.T) {
+	const model = "codex-credits-scheduler-test-model"
+	now := time.Now()
+	spent := &Auth{ID: "floor-rr", Provider: "codex", Metadata: map[string]any{MetadataCreditsFloor: 1000.0},
+		Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "100",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
+		}}}
+	m := NewManager(nil, &RoundRobinSelector{}, nil)
+	m.RegisterExecutor(&authFallbackExecutor{id: "codex"})
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(spent.ID, "codex", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { reg.UnregisterClient(spent.ID) })
+	if _, errRegister := m.Register(context.Background(), spent); errRegister != nil {
+		t.Fatalf("register: %v", errRegister)
+	}
+	m.RefreshSchedulerEntry(spent.ID)
+	execute := func() error {
+		_, errExec := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+		return errExec
+	}
+	if execute() == nil {
+		t.Fatal("no reading: served; want refused")
+	}
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now})
+	if errExec := execute(); errExec != nil {
+		t.Fatalf("reading 1500: Execute = %v; want served", errExec)
+	}
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 900, HasCredits: true, ReadAt: now.Add(time.Second)})
+	if execute() == nil {
+		t.Fatal("reading 900: served; want refused")
 	}
 }
 
