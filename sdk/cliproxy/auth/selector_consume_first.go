@@ -25,7 +25,8 @@ const (
 //
 // Credentials are ranked from the passive quota headers each one last returned
 // (Claude anthropic-ratelimit-unified-*, Codex x-codex-primary/secondary-*):
-//  1. not spent (every observed window below consumeFirstSpentPercent) before spent;
+//  1. not spent (every observed window below consumeFirstSpentPercent) before spent,
+//     and spent before exhausted (a window at 100%, served only on credits);
 //  2. a known reset of the longest (weekly) window before an unknown one;
 //  3. the soonest such reset;
 //  4. the least used, then credential ID (fill-first order).
@@ -36,9 +37,13 @@ const (
 type ConsumeFirstSelector struct{}
 
 type consumeFirstRank struct {
-	spent   bool
-	resetAt time.Time
-	used    float64
+	// exhausted: a window is fully used, so the account answers only on credits
+	// (allow_credits or credits_floor). It ranks after every spent account that
+	// still has included allowance.
+	exhausted bool
+	spent     bool
+	resetAt   time.Time
+	used      float64
 }
 
 type quotaWindow struct {
@@ -78,6 +83,9 @@ func ConsumeFirstStanding(auth *Auth, now time.Time) (resetAt time.Time, usedPer
 }
 
 func (r consumeFirstRank) before(other consumeFirstRank) bool {
+	if r.exhausted != other.exhausted {
+		return !r.exhausted
+	}
 	if r.spent != other.spent {
 		return !r.spent
 	}
@@ -105,6 +113,9 @@ func consumeFirstRankOf(auth *Auth, now time.Time) consumeFirstRank {
 		}
 		if window.used >= consumeFirstSpentPercent {
 			rank.spent = true
+		}
+		if window.used >= 100 {
+			rank.exhausted = true
 		}
 		if window.used > rank.used {
 			rank.used = window.used

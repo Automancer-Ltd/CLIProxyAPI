@@ -3,6 +3,7 @@ package auth
 import (
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -49,10 +50,19 @@ func (q *QuotaState) ObserveResponseHeadersForProvider(provider string, headers 
 	if len(next) == 0 {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(provider), "codex") && !hasCodexCreditSignals(next) {
-		for key, value := range q.Signals {
-			if isCodexCreditSignal(key) {
-				next[key] = value
+	if strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		if hasCodexCreditSignals(next) {
+			if _, stamped := next[codexCreditsObservedAt]; !stamped {
+				if len(next) >= maxQuotaSignalHeaders {
+					dropLeastRetainedSignal(next)
+				}
+				next[codexCreditsObservedAt] = strconv.FormatInt(observedAt.UnixNano(), 10)
+			}
+		} else {
+			for key, value := range q.Signals {
+				if isCodexCreditSignal(key) {
+					next[key] = value
+				}
 			}
 		}
 	}
@@ -64,17 +74,76 @@ func (q *QuotaState) ObserveResponseHeadersForProvider(provider string, headers 
 	return true
 }
 
+// codexCreditsObservedAt records when the credit signals were read (Unix nanoseconds).
+// A carried balance keeps its own time, so an older reading that overlaps newer traffic
+// can still replace it (ObserveCodexCredits).
+const codexCreditsObservedAt = "X-Codex-Credits-Observed-At"
+
 func isCodexCreditSignal(key string) bool {
 	return strings.HasPrefix(strings.ToLower(key), "x-codex-credits-")
 }
 
 func hasCodexCreditSignals(signals map[string]string) bool {
 	for key := range signals {
-		if isCodexCreditSignal(key) {
+		if isCodexCreditSignal(key) && key != codexCreditsObservedAt {
 			return true
 		}
 	}
 	return false
+}
+
+// dropLeastRetainedSignal removes the signal collectQuotaSignals would truncate first,
+// making room for the credits timestamp within maxQuotaSignalHeaders.
+func dropLeastRetainedSignal(signals map[string]string) {
+	last := ""
+	for key := range signals {
+		if isCodexCreditSignal(key) {
+			continue
+		}
+		if last == "" || quotaSignalRetentionRank(key) > quotaSignalRetentionRank(last) ||
+			(quotaSignalRetentionRank(key) == quotaSignalRetentionRank(last) && key > last) {
+			last = key
+		}
+	}
+	delete(signals, last)
+}
+
+func codexCreditsObservedAtOf(signals map[string]string) time.Time {
+	nanos, errParse := strconv.ParseInt(strings.TrimSpace(signals[codexCreditsObservedAt]), 10, 64)
+	if errParse != nil {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
+}
+
+// ObserveCodexCredits applies only the credit balance of a Codex reading that is
+// older than the current snapshot, when the snapshot's balance is older still: a usage
+// poll that started before newer traffic without credit headers must not be lost.
+func (q *QuotaState) ObserveCodexCredits(headers http.Header, observedAt time.Time) bool {
+	if q == nil || observedAt.IsZero() {
+		return false
+	}
+	credits := make(map[string]string)
+	for key, value := range collectQuotaSignals("codex", headers) {
+		if isCodexCreditSignal(key) && key != codexCreditsObservedAt {
+			credits[key] = value
+		}
+	}
+	if len(credits) == 0 || !observedAt.After(codexCreditsObservedAtOf(q.Signals)) {
+		return false
+	}
+	next := make(map[string]string, len(q.Signals)+len(credits)+1)
+	for key, value := range q.Signals {
+		if !isCodexCreditSignal(key) {
+			next[key] = value
+		}
+	}
+	for key, value := range credits {
+		next[key] = value
+	}
+	next[codexCreditsObservedAt] = strconv.FormatInt(observedAt.UnixNano(), 10)
+	q.Signals = next
+	return true
 }
 
 // ClearObservationSignals removes only passive observation data. It leaves

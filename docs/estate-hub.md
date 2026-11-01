@@ -29,7 +29,9 @@ disabled, not held, matching any pin), it picks the first by:
 
 1. **Not spent before spent.** An account is spent when any observed window (5-hour or weekly) is
    at 95% or more. Spent accounts are still used as a last resort until a window reaches 100%;
-   then the paid-credits guard (below) removes them.
+   then the paid-credits guard (below) removes them, unless the account may spend credits
+   (`allow_credits` or `credits_floor`). An account at 100% ranks after every spent account that
+   still has included allowance, so credits are spent last.
 2. **Known reset before unknown.** The rank uses the account's longest window: weekly for Claude
    (`7d`), and for Codex whichever of primary/secondary has the longer `window-minutes`.
 3. **Soonest weekly reset first.** That allowance is the one about to be lost.
@@ -212,12 +214,13 @@ balance is above the floor, so Codex bills the grant. At or below the floor, wit
 false, with unlimited credits, or with no balance known, the guard refuses it exactly as above. The
 floor is the cap: the hub spends at most the balance above it, and the margin covers the balance
 read lagging behind traffic, so the account never reaches credits that would have to be bought.
-The account still ranks as spent, so consume-first uses every included window first and the credits
-last.
+It ranks after every account that still has included allowance, spent or not, so consume-first
+uses every included window first and the credits last.
 
 The balance is the `x-codex-credits-*` figures Codex returns on its responses, and the usage poll
 reads the same figures from `wham/usage` (every `interval` while the account is spent, at least
-hourly while it serves). A response without those headers keeps the last balance. The listing
+hourly while it serves). A response without those headers keeps the last balance, with the time
+it was read; a poll that started before such a response still replaces it when it is newer. The listing
 shows the floor as `"credits_floor": <number>` and the balance as `usage.balance`
 (`{"left": ..., "currency": "credits"}`), which `allowances` prints. Remove the floor with
 `"credits_floor": null`; the account is then guarded as before.
@@ -310,5 +313,6 @@ config-file API keys (`source: "config"`), each with `cooldowns` and `usage`.
   credits (`currency: "credits"`); `banked_resets` (each `expires_at`) for Codex
 - `allow_credits` and `credits_floor` when set (paid-credits guard)
 
-Sort by `spent`, then entries with `reset_at` before those without, then `reset_at`, then
+Sort by `used_percent` of 100 or more (served only on credits) last, then by `spent`, then entries
+with `reset_at` before those without, then `reset_at`, then
 `used_percent`, then `id` to reproduce the router's order within a priority tier.

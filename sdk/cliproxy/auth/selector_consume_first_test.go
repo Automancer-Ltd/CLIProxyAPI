@@ -344,6 +344,19 @@ func TestCreditsFloorSpendsGrantedCreditsDownToTheFloor(t *testing.T) {
 		t.Fatalf("response without credit headers: Execute = %v; want served on the kept balance", errExec)
 	}
 
+	// A poll that started before that response still lands its balance: 900 is below
+	// the floor, so the account is refused.
+	poll := http.Header{}
+	poll.Set("X-Codex-Credits-Has-Credits", "True")
+	poll.Set("X-Codex-Credits-Balance", "900")
+	if !m.ObserveQuota(spent.ID, poll, now.Add(-time.Second)) {
+		t.Fatal("ObserveQuota did not apply the overlapping poll's credit balance")
+	}
+	var belowFloor *accountPinError
+	if errExec := execute(); !errors.As(errExec, &belowFloor) || !strings.Contains(belowFloor.Error(), "paid credits refused") {
+		t.Fatalf("overlapping poll balance 900: Execute = %v; want paid credits refused", errExec)
+	}
+
 	for i, tc := range []struct{ hasCredits, balance string }{
 		{"True", "1000"},  // at the floor
 		{"False", "5000"}, // no credits
@@ -356,5 +369,23 @@ func TestCreditsFloorSpendsGrantedCreditsDownToTheFloor(t *testing.T) {
 		if errExec := execute(); !errors.As(errExec, &refusal) || !strings.Contains(refusal.Error(), "paid credits refused") {
 			t.Fatalf("has_credits=%s balance=%s: Execute = %v; want paid credits refused", tc.hasCredits, tc.balance, errExec)
 		}
+	}
+}
+
+// An account served only on credits ranks after a spent account that still has
+// included allowance, even when it resets sooner (t10647 review).
+func TestConsumeFirstRanksCreditFundedAccountsLast(t *testing.T) {
+	now := time.Now()
+	codex := func(used string, reset time.Duration) *Auth {
+		return &Auth{Provider: "codex", Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   used,
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(reset).Unix(), 10),
+		}}}
+	}
+	onCredits := consumeFirstRankOf(codex("100", time.Hour), now)
+	nearlySpent := consumeFirstRankOf(codex("96", 72*time.Hour), now)
+	if !nearlySpent.before(onCredits) || onCredits.before(nearlySpent) {
+		t.Fatalf("rank 96%% (resets in 3d) = %+v should come before 100%% (resets in 1h) = %+v", nearlySpent, onCredits)
 	}
 }
