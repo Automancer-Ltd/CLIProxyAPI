@@ -362,6 +362,25 @@ the local fallback login; running ones keep the route they started with.
     returns the list; `systemctl --user list-units 'cswap*' 'cxswap*' 'muse-uk*'` shows nothing active.
     Update the device matrix and close t8306.
 
+## Native Claude searches in T3 and bb (t12269)
+
+Scope: Claude's pre-launch search environment on auto-vps; no hub runtime,
+credentials or client data changes. Lane `ln-f9706a74` owns the T3 generator
+and its operator guide in this repo. Ops owns the bb wrapper, drop-in and
+`runbooks/claude-search-shims.md`; PR #1758 in Automancer-Ltd/automancer-ops
+merged as `e4e1b54857a94fd02d4f0e6feee4a57ce172807f`.
+
+Last verified: 2026-11-01 on m6. The generator's synthetic settings request
+adds only the two Claude search environment entries. Ops' launcher boundary
+check preserves arguments and exit 75. These checks do not prove live T3 or bb
+launches. No service or live setting was changed by this lane.
+
+The next step belongs to an auto-vps lane on t12269: resolve release ownership
+and the install freeze recorded on t11784, follow the ops runbook's session
+precautions and rollback, then prove native Grep exclusions and occupied slots
+through new T3 and bb launches. Keep existing sessions intact. The tracker item
+carries the current owner, exact commits, checks and rollout evidence.
+
 ## Cursor
 
 - 2026-10-26: hub installed on m6 (brew `cliproxyapi` 8.0.40, bound to 127.0.0.1:8317, Tailscale

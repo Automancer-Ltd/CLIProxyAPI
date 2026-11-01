@@ -4,6 +4,8 @@
 //     bwrun HUBKEY=AUT_HUB_ACCESS_KEY MGMT=AUT_HUB_MANAGEMENT_KEY -- node docs/estate-hub-devices/t3-hub-instances.mjs
 // then revoke that session (`t3 auth session list`, `t3 auth session revoke <id>`).
 // A providerInstances patch replaces the whole map: every instance T3 should keep must be listed here.
+// Changing claude-hub can close its provider scope. Run only with no live Claude sessions;
+// use the host's normal login PATH, containing a real rg behind the shims (ops t12269).
 const H = process.env.HOME;
 const HUB = 'https://waseems-mac-mini-m6.taild6c90e.ts.net:8317';
 const { T3_TOKEN, HUBKEY, MGMT } = process.env;
@@ -11,7 +13,11 @@ if (!T3_TOKEN || !HUBKEY || !MGMT) throw new Error('need T3_TOKEN, HUBKEY and MG
 
 const env = (name, value, sensitive = false) => ({ name, value, sensitive });
 const key = env('HUB_ACCESS_KEY', HUBKEY, true);
-const claude = () => [env('ANTHROPIC_BASE_URL', HUB), env('ANTHROPIC_AUTH_TOKEN', HUBKEY, true), env('ANTHROPIC_API_KEY', '')];
+// T3 passes these values literally. Claude chooses native Grep's rg before settings.json loads.
+const searchShims = '/opt/automancer/bin/agent-shims';
+const claudePath = [searchShims, ...(process.env.PATH ?? '').split(':').filter(p => p && p !== searchShims)].join(':');
+const claude = () => [env('ANTHROPIC_BASE_URL', HUB), env('ANTHROPIC_AUTH_TOKEN', HUBKEY, true), env('ANTHROPIC_API_KEY', ''),
+  env('USE_BUILTIN_RIPGREP', '0'), env('PATH', claudePath)];
 const claudeConfig = { homePath: `${H}/.config/t3-hub/claude` };
 
 const patch = {
