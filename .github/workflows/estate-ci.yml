@@ -3,7 +3,9 @@
 # upstream's dev branch, publish upstream's releases and enforce upstream's
 # contributor rules), so this is the fork's only CI.
 # The whole suite does not fit the five-minute budget on a hosted runner, so a
-# pull request builds the server and tests the Go packages it changes.
+# pull request builds the server and tests the Go packages it changes, plus the
+# hub packages (auth conductor and management handlers) on every run, because a
+# change elsewhere can break them without touching their files.
 name: estate-ci
 
 on:
@@ -31,16 +33,13 @@ jobs:
           cache: true
       - name: Build
         run: go build -o /tmp/cli-proxy-api ./cmd/server
-      - name: Vet and test changed packages
+      - name: Vet and test changed and hub packages
         env:
           BASE_REF: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+          HUB_PKGS: ./sdk/cliproxy/auth ./internal/api/handlers/management
         run: |
-          pkgs=$(git diff --name-only "$BASE_REF"...HEAD -- '*.go' | xargs -r -n1 dirname | sort -u |
-            while read -r dir; do [ -d "$dir" ] && echo "./$dir"; done)
-          if [ -z "$pkgs" ]; then
-            echo "No Go packages changed."
-            exit 0
-          fi
+          pkgs=$( { git diff --name-only "$BASE_REF"...HEAD -- '*.go' | xargs -r -n1 dirname |
+            while read -r dir; do [ -d "$dir" ] && echo "./$dir"; done; printf '%s\n' $HUB_PKGS; } | sort -u)
           echo "$pkgs"
           go vet $pkgs
           go test -count=1 $pkgs
