@@ -567,22 +567,37 @@ func TestCreditReadingBelongsToTheProviderAccount(t *testing.T) {
 // allowance forwards none unless allow_credits is set (t10647 review).
 func TestWebsocketTurnsStopPastTheIncludedAllowance(t *testing.T) {
 	now := time.Now()
-	codex := func(used string, meta map[string]any) *Auth {
-		return &Auth{ID: "ws-turn", Provider: "codex", Metadata: meta, Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+	codex := func(id, used string, meta map[string]any) *Auth {
+		return &Auth{ID: id, Provider: "codex", Metadata: meta, Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
 			"X-Codex-Primary-Used-Percent":   used,
 			"X-Codex-Primary-Window-Minutes": "10080",
 			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
 		}}}
 	}
+	m := NewManager(nil, nil, nil)
+	aboveFloor := codex("ws-turn-above-floor", "100", map[string]any{MetadataCreditsFloor: 1000.0, MetadataGroup: "pro"})
+	atFloor := codex("ws-turn-at-floor", "100", map[string]any{MetadataCreditsFloor: 1000.0, MetadataGroup: "pro"})
+	unknownCost := codex("ws-turn-unknown", "100", map[string]any{MetadataCreditsFloor: 1000.0, MetadataGroup: "pro"})
+	t.Cleanup(func() {
+		credits.forget(creditLedgerKey(aboveFloor))
+		credits.forget(creditLedgerKey(atFloor))
+		credits.forget(creditLedgerKey(unknownCost))
+	})
+	m.ObserveCredits(aboveFloor, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now})
+	m.ObserveCredits(atFloor, CreditReading{Balance: 1000, HasCredits: true, ReadAt: now})
+	m.ObserveCredits(unknownCost, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now})
+	observeCreditSpend(unknownCost, "codex", http.Header{}, now)
 	for _, tc := range []struct {
 		name string
 		auth *Auth
 		want bool
 	}{
-		{"included allowance left", codex("60", nil), true},
-		{"on credits with a floor", codex("100", map[string]any{MetadataCreditsFloor: 1000.0}), false},
-		{"spent, no override", codex("100", nil), false},
-		{"allow_credits", codex("100", map[string]any{MetadataAllowCredits: true}), true},
+		{"included allowance left", codex("ws-turn-included", "60", nil), true},
+		{"on credits above the floor keeps the session", aboveFloor, true},
+		{"on credits at the floor", atFloor, false},
+		{"on credits with an unknown cost", unknownCost, false},
+		{"spent, no override", codex("ws-turn-spent", "100", nil), false},
+		{"allow_credits", codex("ws-turn-allow", "100", map[string]any{MetadataAllowCredits: true}), true},
 	} {
 		if got := AuthServesWebsocketTurn(tc.auth, now); got != tc.want {
 			t.Errorf("%s: AuthServesWebsocketTurn = %v; want %v", tc.name, got, tc.want)
@@ -672,5 +687,50 @@ func TestUsedUpWindowReachesEveryCopyAndOpenSockets(t *testing.T) {
 	recordQuotaExhaustion(reset, now.Add(2*time.Second))
 	if !AuthServesWebsocketTurn(stale, now.Add(2*time.Second)) {
 		t.Fatal("after a complete snapshot shows the window reset: next websocket turn refused; want allowed")
+	}
+}
+
+// A duplex response that completes without reporting a balance must make the reading
+// unknown at completion, not at socket teardown: another connection must not select
+// the account on the unchanged balance (t10647 review).
+func TestObserveStreamResponseMarksAnUnreportedBalanceUnknown(t *testing.T) {
+	now := time.Now()
+	exhausted := &Auth{ID: "stream-response-unknown", Provider: "codex",
+		Metadata: map[string]any{MetadataCreditsFloor: 1000.0},
+		Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "100",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(time.Hour).Unix(), 10),
+		}}}
+	remaining := &Auth{ID: "stream-response-included", Provider: "codex",
+		Metadata: map[string]any{MetadataCreditsFloor: 1000.0},
+		Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "60",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
+		}}}
+	t.Cleanup(func() {
+		credits.forget(creditLedgerKey(exhausted))
+		credits.forget(creditLedgerKey(remaining))
+	})
+	m := NewManager(nil, nil, nil)
+	m.ObserveCredits(exhausted, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now})
+	m.ObserveCredits(remaining, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now})
+	if _, spent := authIncludedSpentUntil(exhausted, now); spent {
+		t.Fatal("balance above the floor: refused; want served")
+	}
+
+	ObserveStreamResponse(exhausted, now)
+	if reading := CreditReadingOf(exhausted); !reading.Unknown {
+		t.Fatal("a completed response without a balance: reading still known; want unknown")
+	}
+	if _, spent := authIncludedSpentUntil(exhausted, now); !spent {
+		t.Fatal("a completed response without a balance: served; want refused until a newer poll")
+	}
+
+	// An account with included allowance left was not served on credits.
+	ObserveStreamResponse(remaining, now)
+	if reading := CreditReadingOf(remaining); reading.Unknown {
+		t.Fatal("a response with included allowance left: reading unknown; want known")
 	}
 }

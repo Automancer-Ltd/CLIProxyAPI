@@ -210,15 +210,29 @@ func CreditReadingOf(auth *Auth) CreditReading {
 }
 
 // AuthServesWebsocketTurn reports whether a bound websocket may forward another turn
-// on the credential. Follow-up turns skip selection, so a credential past its included
-// allowance serves none unless allow_credits is set: with credits_floor, each turn on
-// credits then ends its stream, is accounted (MarkResult), and the next turn goes
-// through selection and the floor again.
+// on the credential. Follow-up turns skip selection, so it applies the selection guard
+// on every turn: an account whose included allowance is used up serves none unless its
+// credit balance is above its floor (or allow_credits is set). A credit-funded account
+// keeps its session, because a refusal closes the socket instead of returning the
+// client to selection; the floor is re-checked on each turn, and each turn's spend
+// lowers the reading (or makes it unknown) at completion.
 func AuthServesWebsocketTurn(auth *Auth, now time.Time) bool {
 	if auth == nil {
 		return false
 	}
-	return AuthAllowCredits(auth) || authExhaustedUntil(auth, now).IsZero()
+	_, spent := authIncludedSpentUntil(auth, now)
+	return !spent
+}
+
+// ObserveStreamResponse accounts a completed duplex response whose stream reported no
+// credit balance: its cost is unknown until a newer poll, so the guard refuses the
+// account in the meantime. It is the stream counterpart of MarkResult's credit
+// accounting, which otherwise waits for the socket to close.
+func ObserveStreamResponse(auth *Auth, now time.Time) {
+	if auth == nil {
+		return
+	}
+	observeCreditSpend(auth, auth.Provider, nil, now)
 }
 
 // observeCreditSpend applies a served Codex response to the credential's reading.

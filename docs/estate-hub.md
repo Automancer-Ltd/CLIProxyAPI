@@ -274,12 +274,17 @@ to the ChatGPT account behind the credential, so a file replaced by another acco
 with no reading. It is held in memory only: after a restart the account is refused until its next
 poll.
 
-A Codex websocket sends follow-up turns without a new selection, so the hub forwards no follow-up
-turn on an account past its included allowance unless `allow_credits` is set. With a floor, each
-turn on credits ends its stream and is accounted, and the client's next turn is selected, and
-checked against the floor, afresh. Quota events inside a running stream (a window reaching 100%, a
-lower balance) take effect for the next turn at once; the hub also keeps the latest used-up window
-per account beside the balance, so no older copy of the account hides it. This also stops an open websocket from spending paid credits
+A Codex websocket sends follow-up turns without a new selection, so the hub checks the same
+paid-credits guard at every turn: an account past its included allowance forwards no follow-up turn
+unless `allow_credits` is set or its balance is above its floor. A credit-funded account keeps its
+session; the floor is checked again on each turn, and the turn's spend is applied when its response
+completes (a completed response that reported no balance makes the reading unknown), so no other
+connection can spend against the old figure. Quota events inside a running stream (a window reaching
+100%, a lower balance) take effect for the next turn at once; the hub also keeps the latest used-up
+window per account beside the balance, so no older copy of the account hides it, and consume-first
+ranks that account after every account with included allowance left. Only a newer snapshot that
+carries the quota windows can clear a used-up window: a response that reports only the balance
+cannot. This also stops an open websocket from spending paid credits
 under the guard above. An account with a
 floor is polled every `interval` even while it serves traffic, so with the estate's 10 minutes a
 reading is never more than about 11 minutes old; with the refresher off, or an interval over 30
