@@ -636,7 +636,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
-			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
+			resp, errExec := m.executeAuthorized(execCtx, executor, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -654,7 +654,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
-					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					resp, errExec = m.executeAuthorized(execCtx, executor, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -854,7 +854,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
-			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
+			resp, errExec := m.countAuthorized(execCtx, executor, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -872,7 +872,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
-					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
+					resp, errExec = m.countAuthorized(execCtx, executor, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -1600,6 +1600,9 @@ func (m *Manager) PrepareRequestAuth(ctx context.Context, preparer RequestAuthPr
 	if m == nil || preparer == nil || auth == nil || !preparer.ShouldPrepareRequestAuth(auth) {
 		return auth, nil
 	}
+	if err := m.AuthorizeHub(ctx, auth); err != nil {
+		return nil, err
+	}
 
 	id := strings.TrimSpace(auth.ID)
 	if id == "" {
@@ -2067,6 +2070,9 @@ func (m *Manager) InjectCredentials(req *http.Request, authID string) error {
 		return nil
 	}
 	if p, ok := exec.(RequestPreparer); ok && p != nil {
+		if err := m.AuthorizeHub(req.Context(), a); err != nil {
+			return err
+		}
 		return p.PrepareRequest(req, a)
 	}
 	return nil
@@ -2097,6 +2103,9 @@ func (m *Manager) PrepareHttpRequest(ctx context.Context, auth *Auth, req *http.
 	preparer, ok := exec.(RequestPreparer)
 	if !ok || preparer == nil {
 		return &Error{Code: "not_supported", Message: "executor does not support http request preparation"}
+	}
+	if err := m.AuthorizeHub(req.Context(), auth); err != nil {
+		return err
 	}
 	return preparer.PrepareRequest(req, auth)
 }
@@ -2145,6 +2154,9 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 	exec := m.executorFor(providerKey)
 	if exec == nil {
 		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
+	}
+	if err := m.AuthorizeHub(ctx, auth); err != nil {
+		return nil, err
 	}
 	return exec.HttpRequest(ctx, auth, req)
 }
@@ -2330,12 +2342,12 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 	credVersion := auth.CredentialVersion
 	regEpoch := auth.RegistrationEpoch
 
-	streamRes, errStream := executor.ExecuteStream(execCtx, auth, req, opts)
+	streamRes, errStream := m.streamAuthorized(execCtx, executor, auth, req, opts)
 	if errStream != nil {
 		rerr := resultErrorFromError(errStream)
 		if rerr != nil && rerr.HTTPStatus == http.StatusNotImplemented {
 			opts.Stream = false
-			resp, errExec := executor.Execute(execCtx, auth, req, opts)
+			resp, errExec := m.executeAuthorized(execCtx, executor, auth, req, opts)
 			rerrExec := resultErrorFromError(errExec)
 			if rerrExec != nil {
 				rerrExec.Message = sanitizeRenewalMessage(rerrExec.Message)

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 	"io"
 	"net/http"
 	"net/url"
@@ -314,6 +315,21 @@ func (o *CodexAuth) CreateTokenStorage(bundle *CodexAuthBundle) *CodexTokenStora
 // RefreshTokensWithRetry refreshes tokens with a built-in retry mechanism.
 // It attempts to refresh the tokens up to a specified maximum number of retries,
 // with an exponential backoff strategy to handle transient network errors.
+// RefreshTokensOnce performs one token request and refuses redirect replay.
+func (o *CodexAuth) RefreshTokensOnce(ctx context.Context, token string) (*CodexTokenData, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), codexRefreshTimeout)
+	defer cancel()
+	copyAuth := *o
+	client := *o.httpClient
+	client.Transport = baseauth.GuardRefreshDispatch(client.Transport)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	copyAuth.httpClient = &client
+	return copyAuth.refreshTokensSingleFlight(ctx, token)
+}
+
 func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken string, maxRetries int) (*CodexTokenData, error) {
 	var lastErr error
 

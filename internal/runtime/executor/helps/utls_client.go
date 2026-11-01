@@ -486,6 +486,7 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 		handshakeTimeout = cfg.TLSHandshakeTimeout()
 	}
 	defer func() {
+		clientOut.Transport = cliproxyauth.GuardHubTransport(clientOut.Transport, auth)
 		clientOut = httptransport.Decorate(ctx, clientOut)
 		if clientOut != nil && handshakeTimeout > 0 {
 			clientOut.Transport = &tlsHandshakeTimeoutRoundTripper{base: clientOut.Transport, timeout: handshakeTimeout}

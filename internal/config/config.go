@@ -12,6 +12,8 @@ type ServerResponseCompression = ResponseCompressionConfig
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
+	// HubAuthority is opt-in; contains paths only, never secret values. Changing it requires restart.
+	HubAuthority *HubAuthorityConfig `yaml:"hub-authority,omitempty" json:"-"`
 	// ServerResponseCompression is the JSON-visible mirror of the downstream
 	// response compression settings (YAML: server.response-compression).
 	ServerResponseCompression ResponseCompressionConfig `yaml:"-" json:"response-compression"`
@@ -216,4 +218,18 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+}
+
+// HubAuthorityConfig binds one process to Tracker and the dedicated encrypted prefix.
+type HubAuthorityConfig struct {
+	Host              string `yaml:"host"`
+	URL               string `yaml:"url"`
+	AccessIDFile      string `yaml:"access-id-file"`
+	AccessSecretFile  string `yaml:"access-secret-file"`
+	B2Endpoint        string `yaml:"b2-endpoint"`
+	B2Bucket          string `yaml:"b2-bucket"`
+	B2IDFile          string `yaml:"b2-id-file"`
+	B2KeyFile         string `yaml:"b2-key-file"`
+	EncryptionKeyFile string `yaml:"encryption-key-file"`
+	Spool             string `yaml:"spool"`
 }

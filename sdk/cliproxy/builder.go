@@ -201,6 +201,9 @@ func (b *Builder) Build() (*Service, error) {
 	if b.cfg == nil {
 		return nil, fmt.Errorf("cliproxy: configuration is required")
 	}
+	if b.cfg.HubAuthority != nil && (b.cfg.Home.Enabled || b.cfg.Plugins.Enabled || b.pluginHost != nil) {
+		return nil, fmt.Errorf("shared hub authority cannot run Home or dynamic plugins")
+	}
 	if b.configPath == "" {
 		return nil, fmt.Errorf("cliproxy: configuration path is required")
 	}
