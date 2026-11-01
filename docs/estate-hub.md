@@ -260,8 +260,16 @@ and the credits last.
 
 The guard starts from the usage poll's reading of `wham/usage` (`credits.balance`) and trusts it
 for 30 minutes after the read. The hub keeps one reading per account, outside the copies of the
-account that routing and updates work on, so every routing path sees the same figure. It is held in
-memory only: after a restart the account is refused until its next poll. An account with a
+account that routing and updates work on, so every routing path sees the same figure. It belongs
+to the ChatGPT account behind the credential, so a file replaced by another account's login starts
+with no reading. It is held in memory only: after a restart the account is refused until its next
+poll.
+
+A Codex websocket sends follow-up turns without a new selection, so the hub forwards no follow-up
+turn on an account past its included allowance unless `allow_credits` is set. With a floor, each
+turn on credits ends its stream and is accounted, and the client's next turn is selected, and
+checked against the floor, afresh. This also stops an open websocket from spending paid credits
+under the guard above. An account with a
 floor is polled every `interval` even while it serves traffic, so with the estate's 10 minutes a
 reading is never more than about 11 minutes old; with the refresher off, or an interval over 30
 minutes, the account is always refused. Until a newer poll, traffic only lowers the reading: a

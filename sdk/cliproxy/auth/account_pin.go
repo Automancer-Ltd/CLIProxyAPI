@@ -92,7 +92,7 @@ func AuthCreditBalance(auth *Auth, now time.Time) (float64, bool) {
 	if auth == nil {
 		return 0, false
 	}
-	reading := credits.get(auth.ID)
+	reading := CreditReadingOf(auth)
 	if reading.ReadAt.IsZero() || reading.Unknown || now.Sub(reading.ReadAt) > CreditReadingMaxAge ||
 		!reading.HasCredits || reading.Unlimited || math.IsNaN(reading.Balance) || math.IsInf(reading.Balance, 0) {
 		return 0, false
