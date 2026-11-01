@@ -234,6 +234,30 @@ Client examples:
 - Codex: in `~/.codex/config.toml`, under `[model_providers.cliproxy]`, add
   `http_headers = { "X-CPA-Account" = "pro" }` (the `cxswap run <slot>` equivalent).
 
+## Codex image generation (`image_gen`)
+
+Codex (0.166 and later) offers its built-in `image_gen` tool only when its provider is OpenAI
+itself, sets `requires_openai_auth`, or sends an `x-openai-actor-authorization` header. The hub's
+`cliproxy` provider is none of these, so without the header Codex never offers the tool and
+`codex-imagegen` fails with "the built-in image_gen tool isn't available in this session" (t10301).
+Every client's provider block therefore carries the header; its value is not checked:
+
+```toml
+[model_providers.cliproxy]
+name = "Estate hub"
+base_url = "http://127.0.0.1:8316/v1"
+wire_api = "responses"
+http_headers = { "x-openai-actor-authorization" = "estate-hub" }
+requires_openai_auth = false
+supports_websockets = true
+experimental_bearer_token = "..."
+```
+
+With a pin, add `"X-CPA-Account"` to the same `http_headers` table. The tool then posts to the
+hub's `/v1/images/generations` and `/v1/images/edits` (model `gpt-image-2`), which the hub serves
+from a Codex subscription account like any other request. No local Codex login is needed. The hub
+copies only named headers upstream, so this one never reaches OpenAI.
+
 ## Reading the state (for a dashboard)
 
 `GET /v8/management/credentials/usage` is the dashboard's single source: `strategy`,
