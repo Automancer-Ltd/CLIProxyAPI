@@ -246,6 +246,14 @@ curl -X PATCH "$HUB/v8/management/credentials/fields" \
 Remove it again with `"allow_credits": null`. The credential listing shows `"allow_credits": true`
 while it is set. Rolling back the whole guard means deploying the previous binary.
 
+**The hub cannot cap credit spend exactly.** It has no single point where every request's cost is
+counted: a failed or cancelled stream, a turn on an open Codex websocket, and the many copies of an
+account's state (scheduler snapshots, in-flight updates) each see a different figure. An attempt to
+spend a granted credit pool down to a hub-side floor (`credits_floor`, Automancer-Ltd/CLIProxyAPI#37,
+t10647) went through twelve independent review rounds, each finding another path that spent past
+it. Put the hard cap at the provider (a prepaid balance with auto-reload off, or a credit grant that
+cannot top itself up) and use the hub only to choose when to spend.
+
 ## Account pins
 
 A client pins a request with one header:
