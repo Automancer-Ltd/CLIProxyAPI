@@ -24,20 +24,51 @@ const (
 	// MetadataPinOnly keeps a credential out of unpinned routing: only a request
 	// whose account pin matches it can use it. Holds and disabled still apply.
 	MetadataPinOnly = "pin_only"
+	// MetadataAllowCredits lets a credential keep serving after an included window is
+	// used up. The provider then bills the overage (Codex credits, Claude extra usage),
+	// so it is off unless set on the account.
+	MetadataAllowCredits = "allow_credits"
 )
 
 // AuthPinOnly reports whether the credential serves pinned requests only.
 func AuthPinOnly(auth *Auth) bool {
+	return authMetadataFlag(auth, MetadataPinOnly)
+}
+
+// AuthAllowCredits reports whether the credential may serve past its included allowance.
+func AuthAllowCredits(auth *Auth) bool {
+	return authMetadataFlag(auth, MetadataAllowCredits)
+}
+
+func authMetadataFlag(auth *Auth, key string) bool {
 	if auth == nil {
 		return false
 	}
-	switch value := auth.Metadata[MetadataPinOnly].(type) {
+	switch value := auth.Metadata[key].(type) {
 	case bool:
 		return value
 	case string:
 		return strings.EqualFold(strings.TrimSpace(value), "true")
 	}
 	return false
+}
+
+// authIncludedSpentUntil reports when the credential's included allowance returns while
+// any observed window is fully used and not yet reset. Past that point a Codex account
+// with credits, or a Claude account with extra usage, still answers and bills the
+// request, so the hub routes nothing to it (no paid fallback, t9765) unless
+// allow_credits is set. The usage refresher keeps polling it, so an early reset lifts this.
+func authIncludedSpentUntil(auth *Auth, now time.Time) (time.Time, bool) {
+	if auth == nil || AuthAllowCredits(auth) {
+		return time.Time{}, false
+	}
+	var until time.Time
+	for _, window := range quotaWindowsFromSignals(auth.Quota.Signals, auth.Quota.ObservedAt) {
+		if window.used >= 100 && window.resetAt.After(now) && window.resetAt.After(until) {
+			until = window.resetAt
+		}
+	}
+	return until, !until.IsZero()
 }
 
 func accountPinFromMetadata(meta map[string]any) string {
@@ -123,7 +154,7 @@ func (m *Manager) accountPinRefusal(providers []string, model string, opts clipr
 	now := time.Now()
 	registryRef := registry.GetGlobalRegistry()
 	matched, disabled := 0, 0
-	var heldUntil, coolingUntil time.Time
+	var heldUntil, coolingUntil, spentUntil time.Time
 
 	m.mu.RLock()
 	for _, candidate := range m.auths {
@@ -144,6 +175,12 @@ func (m *Manager) accountPinRefusal(providers []string, model string, opts clipr
 		if until, held := authHoldUntil(candidate, now); held {
 			if heldUntil.IsZero() || until.Before(heldUntil) {
 				heldUntil = until
+			}
+			continue
+		}
+		if until, spent := authIncludedSpentUntil(candidate, now); spent {
+			if spentUntil.IsZero() || until.Before(spentUntil) {
+				spentUntil = until
 			}
 			continue
 		}
@@ -175,6 +212,12 @@ func (m *Manager) accountPinRefusal(providers []string, model string, opts clipr
 		reasons = append(reasons, fmt.Sprintf("held until %s", heldUntil.UTC().Format(time.RFC3339)))
 		if soonest.IsZero() || heldUntil.Before(soonest) {
 			soonest = heldUntil
+		}
+	}
+	if !spentUntil.IsZero() {
+		reasons = append(reasons, fmt.Sprintf("included allowance used up until %s (paid credits refused)", spentUntil.UTC().Format(time.RFC3339)))
+		if soonest.IsZero() || spentUntil.Before(soonest) {
+			soonest = spentUntil
 		}
 	}
 	if disabled > 0 {
