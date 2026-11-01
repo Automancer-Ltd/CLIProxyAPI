@@ -350,3 +350,56 @@ func TestRequestCodexTokenLoginDoesNotRaceConfigV8Save(t *testing.T) {
 		t.Fatalf("expected completed codex session without error, got ok=%v completed=%v status=%q", ok, completed, status)
 	}
 }
+
+// A targeted Codex re-login must rewrite the target credential where it is stored,
+// not write a second file at the top of the auth directory and leave the target stale.
+func TestRequestCodexTokenRecoveryRewritesNestedTargetFile(t *testing.T) {
+	originalNewCodexOAuthService := newCodexOAuthService
+	newCodexOAuthService = func(cfg *config.Config) codexOAuthService {
+		return &fakeCodexOAuthService{}
+	}
+	defer func() {
+		newCodexOAuthService = originalNewCodexOAuthService
+	}()
+
+	authDir := filepath.Join(t.TempDir(), "auths")
+	targetPath := filepath.Join(authDir, "nested", "account.json")
+	if errMkdir := os.MkdirAll(filepath.Dir(targetPath), 0o700); errMkdir != nil {
+		t.Fatalf("create nested auth dir: %v", errMkdir)
+	}
+	stale := `{"type":"codex","email":"codex-test-code@example.test","access_token":"stale-access"}`
+	if errWrite := os.WriteFile(targetPath, []byte(stale), 0o600); errWrite != nil {
+		t.Fatalf("write target credential: %v", errWrite)
+	}
+
+	handler := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
+	router := gin.New()
+	router.GET("/codex-auth-url", func(c *gin.Context) {
+		c.Set(oauthSessionTargetContextKey, oauthRecoveryTarget{
+			AuthID:   "nested/account.json",
+			FileName: "account.json",
+			Path:     targetPath,
+			Provider: "codex",
+			Email:    "codex-test-code@example.test",
+		})
+		handler.RequestCodexToken(c)
+	})
+
+	state := requestCodexTokenState(t, router)
+	defer CompleteOAuthSession(state)
+	if _, errWrite := WriteOAuthCallbackFileForPendingSession(authDir, "codex", state, "test-code", ""); errWrite != nil {
+		t.Fatalf("write callback file: %v", errWrite)
+	}
+	waitForOAuthSessionDone(t, state)
+
+	data, errRead := os.ReadFile(targetPath)
+	if errRead != nil {
+		t.Fatalf("read target credential: %v", errRead)
+	}
+	if !strings.Contains(string(data), "access-test-code") {
+		t.Fatalf("target credential was not rewritten with the new login: %s", data)
+	}
+	if _, errStat := os.Stat(filepath.Join(authDir, "account.json")); !os.IsNotExist(errStat) {
+		t.Fatalf("recovery wrote a stray top-level account.json (stat error %v)", errStat)
+	}
+}

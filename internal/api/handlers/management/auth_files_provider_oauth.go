@@ -366,7 +366,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		}
 		target, hasTarget := GetOAuthSessionTarget(state)
 		if hasTarget && target.AuthID != "" {
-			record.ID = target.AuthID
+			applyOAuthRecoveryTargetLocation(target, record)
 		}
 		var hadPrevAuth bool
 		var prevVersion uint64
@@ -1394,18 +1394,10 @@ func authIdentityEmailAndAccountID(auth *coreauth.Auth) (email string, accountID
 	return email, accountID
 }
 
-func applyPluginOAuthRecoveryTarget(target oauthRecoveryTarget, provider string, records []*coreauth.Auth) bool {
-	if len(records) != 1 || records[0] == nil {
-		return false
-	}
-	record := records[0]
-	gotEmail, gotAccountID := authIdentityEmailAndAccountID(record)
-	candidateFileName := firstNonEmpty(strings.TrimSpace(record.FileName), strings.TrimSpace(record.ID))
-
-	if !matchesOAuthRecoveryTarget(target, gotEmail, gotAccountID, candidateFileName) {
-		return false
-	}
-
+// applyOAuthRecoveryTargetLocation points a recovered credential at the target's ID,
+// file name and storage path, so the save replaces the target instead of writing a
+// new file beside it.
+func applyOAuthRecoveryTargetLocation(target oauthRecoveryTarget, record *coreauth.Auth) {
 	record.ID = target.AuthID
 	targetFileName := strings.TrimSpace(target.FileName)
 	if targetFileName == "" {
@@ -1426,6 +1418,21 @@ func applyPluginOAuthRecoveryTarget(target oauthRecoveryTarget, provider string,
 		delete(record.Attributes, coreauth.AttributePath)
 		record.Attributes[coreauth.AttributeSource] = targetFileName
 	}
+}
+
+func applyPluginOAuthRecoveryTarget(target oauthRecoveryTarget, provider string, records []*coreauth.Auth) bool {
+	if len(records) != 1 || records[0] == nil {
+		return false
+	}
+	record := records[0]
+	gotEmail, gotAccountID := authIdentityEmailAndAccountID(record)
+	candidateFileName := firstNonEmpty(strings.TrimSpace(record.FileName), strings.TrimSpace(record.ID))
+
+	if !matchesOAuthRecoveryTarget(target, gotEmail, gotAccountID, candidateFileName) {
+		return false
+	}
+
+	applyOAuthRecoveryTargetLocation(target, record)
 	if trimmedProvider := strings.ToLower(strings.TrimSpace(provider)); trimmedProvider != "" {
 		if record.Metadata == nil {
 			record.Metadata = make(map[string]any)

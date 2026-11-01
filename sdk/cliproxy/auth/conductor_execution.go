@@ -2261,6 +2261,15 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 	if auth.RequiresSignIn {
 		return auth, &Error{Code: "sign_in_required", Message: "credential requires sign-in before inference verification", HTTPStatus: http.StatusConflict}
 	}
+	// A verification is a real provider request, so it obeys the same hold and
+	// no-paid-credits rules as every selection path.
+	now := time.Now()
+	if until, held := authHoldUntil(auth, now); held {
+		return auth, &Error{Code: "auth_held", Message: fmt.Sprintf("credential is held until %s", until.UTC().Format(time.RFC3339)), HTTPStatus: http.StatusConflict}
+	}
+	if until, spent := authIncludedSpentUntil(auth, now); spent {
+		return auth, &Error{Code: "included_allowance_spent", Message: fmt.Sprintf("credential's included allowance is used up until %s (paid credits refused)", until.UTC().Format(time.RFC3339)), HTTPStatus: http.StatusConflict}
+	}
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 	m.mu.RLock()
 	executor := m.executors[provider]
