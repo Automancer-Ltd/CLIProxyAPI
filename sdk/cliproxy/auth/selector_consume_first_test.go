@@ -589,3 +589,56 @@ func TestWebsocketTurnsStopPastTheIncludedAllowance(t *testing.T) {
 		}
 	}
 }
+
+// The guard reads the latest quota observation from the ledger as well as the Auth
+// copy it is handed: a scheduler snapshot or an open socket can carry windows from
+// before the account was used up (t10647 review).
+func TestUsedUpWindowReachesEveryCopyAndOpenSockets(t *testing.T) {
+	now := time.Now()
+	window := func(used string) http.Header {
+		headers := http.Header{}
+		headers.Set("X-Codex-Primary-Used-Percent", used)
+		headers.Set("X-Codex-Primary-Window-Minutes", "10080")
+		headers.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10))
+		return headers
+	}
+	stale := &Auth{ID: "ledger-window", Provider: "codex", Metadata: map[string]any{MetadataCreditsFloor: 1000.0},
+		Quota: QuotaState{ObservedAt: now.Add(-time.Minute), Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "60",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
+		}}}
+	t.Cleanup(func() { credits.forget(creditLedgerKey(stale)) })
+	m := NewManager(nil, nil, nil)
+	m.ObserveCredits(stale, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now})
+
+	// A quota event inside a running stream: the window is used up and the balance is
+	// below the floor. The stale copy is refused for selection and for the next turn.
+	inStream := window("100")
+	inStream.Set("X-Codex-Credits-Balance", "900")
+	ObserveStreamQuota(stale, inStream, now)
+	if _, spent := authIncludedSpentUntil(stale, now); !spent {
+		t.Fatal("stale copy after an in-stream event at 100% and 900 credits: served; want refused")
+	}
+	if AuthServesWebsocketTurn(stale, now) {
+		t.Fatal("stale copy after an in-stream event at 100%: next websocket turn allowed; want refused")
+	}
+
+	// A later partial event that omits the used-up window cannot clear it.
+	ObserveStreamQuota(stale, window("40"), now.Add(time.Second))
+	if AuthServesWebsocketTurn(stale, now.Add(time.Second)) {
+		t.Fatal("partial event at 40%: next websocket turn allowed; want still refused")
+	}
+
+	// A complete, newer snapshot (a poll after a reset) clears it.
+	reset := stale.Clone()
+	reset.Quota = QuotaState{ObservedAt: now.Add(2 * time.Second), Signals: map[string]string{
+		"X-Codex-Primary-Used-Percent":   "0",
+		"X-Codex-Primary-Window-Minutes": "10080",
+		"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(7*24*time.Hour).Unix(), 10),
+	}}
+	recordQuotaExhaustion(reset, now.Add(2*time.Second))
+	if !AuthServesWebsocketTurn(stale, now.Add(2*time.Second)) {
+		t.Fatal("after a complete snapshot shows the window reset: next websocket turn refused; want allowed")
+	}
+}

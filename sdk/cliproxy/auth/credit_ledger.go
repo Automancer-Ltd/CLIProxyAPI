@@ -22,6 +22,11 @@ type CreditReading struct {
 	// Unknown: a response was served on credits without reporting a balance, so what
 	// it cost is unknown until a newer poll.
 	Unknown bool `json:"unknown,omitempty"`
+	// ExhaustedUntil is when the latest quota observation says the included allowance
+	// returns (zero when it is not used up), observed at QuotaObservedAt. Copies of the
+	// Auth can carry older windows, so the guard also reads this one.
+	ExhaustedUntil  time.Time `json:"exhausted_until,omitzero"`
+	QuotaObservedAt time.Time `json:"quota_observed_at,omitzero"`
 }
 
 // creditLedger holds the one credit reading per credential that the paid-credits guard
@@ -73,13 +78,15 @@ func (l *creditLedger) observePoll(id string, reading CreditReading) bool {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	current, known := l.readings[id]
+	current := l.readings[id]
+	known := !current.ReadAt.IsZero()
 	if known && !reading.ReadAt.After(current.ReadAt) {
 		return false
 	}
 	if !known || reading.ReadAt.After(current.UpdatedAt) {
-		reading.UpdatedAt, reading.Unknown = reading.ReadAt, false
-		l.readings[id] = reading
+		current.Balance, current.HasCredits, current.Unlimited = reading.Balance, reading.HasCredits, reading.Unlimited
+		current.ReadAt, current.UpdatedAt, current.Unknown = reading.ReadAt, reading.ReadAt, false
+		l.readings[id] = current
 		return true
 	}
 	current.ReadAt = reading.ReadAt
@@ -97,8 +104,8 @@ func (l *creditLedger) observePoll(id string, reading CreditReading) bool {
 func (l *creditLedger) observeResponse(id string, reported float64, hasReported, onCredits bool, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	current, known := l.readings[id]
-	if !known {
+	current := l.readings[id]
+	if current.ReadAt.IsZero() {
 		return
 	}
 	switch {
@@ -112,6 +119,63 @@ func (l *creditLedger) observeResponse(id string, reported float64, hasReported,
 		return
 	}
 	l.readings[id] = current
+}
+
+// observeExhaustion records when the included allowance returns, as of observedAt. A
+// complete observation (a response's or a poll's full quota snapshot) replaces an older
+// one; a partial one (a mid-stream quota event) can only move the return later, since
+// it may omit the window that is used up.
+func (l *creditLedger) observeExhaustion(key string, until, observedAt time.Time, complete bool) {
+	if observedAt.IsZero() {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	current := l.readings[key]
+	if !observedAt.After(current.QuotaObservedAt) {
+		return
+	}
+	if complete || until.After(current.ExhaustedUntil) {
+		current.ExhaustedUntil, current.QuotaObservedAt = until, observedAt
+		l.readings[key] = current
+	}
+}
+
+// recordQuotaExhaustion stores the credential's current quota snapshot in the ledger.
+func recordQuotaExhaustion(auth *Auth, now time.Time) {
+	if auth == nil || auth.Quota.ObservedAt.IsZero() {
+		return
+	}
+	credits.observeExhaustion(creditLedgerKey(auth), includedExhaustedUntil(auth.Quota, now), auth.Quota.ObservedAt, true)
+}
+
+// ObserveStreamQuota applies quota figures that arrive inside a running stream (Codex
+// websocket rate-limit events) before the stream ends: a used-up window and a lower
+// credit balance take effect at once, so a follow-up turn is checked against them.
+func ObserveStreamQuota(auth *Auth, headers http.Header, now time.Time) {
+	if auth == nil || len(headers) == 0 {
+		return
+	}
+	signals := collectQuotaSignals(auth.Provider, headers)
+	if len(signals) == 0 {
+		return
+	}
+	key := creditLedgerKey(auth)
+	credits.observeExhaustion(key, includedExhaustedUntil(QuotaState{Signals: signals, ObservedAt: now}, now), now, false)
+	if reported, errParse := strconv.ParseFloat(strings.TrimSpace(signals["X-Codex-Credits-Balance"]), 64); errParse == nil &&
+		!math.IsNaN(reported) && !math.IsInf(reported, 0) {
+		credits.observeResponse(key, reported, true, false, now)
+	}
+}
+
+// ledgerExhaustedUntil returns the ledger's return time for the credential's included
+// allowance while it is still ahead.
+func ledgerExhaustedUntil(auth *Auth, now time.Time) time.Time {
+	until := credits.get(creditLedgerKey(auth)).ExhaustedUntil
+	if until.After(now) {
+		return until
+	}
+	return time.Time{}
 }
 
 // ObserveCredits records a usage poll's credit reading for the credential as the poll
@@ -137,7 +201,7 @@ func AuthServesWebsocketTurn(auth *Auth, now time.Time) bool {
 	if auth == nil {
 		return false
 	}
-	return AuthAllowCredits(auth) || includedExhaustedUntil(auth.Quota, now).IsZero()
+	return AuthAllowCredits(auth) || (includedExhaustedUntil(auth.Quota, now).IsZero() && ledgerExhaustedUntil(auth, now).IsZero())
 }
 
 // observeCreditSpend applies a served Codex response to the credential's reading.

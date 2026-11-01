@@ -51,6 +51,7 @@ func (m *Manager) ObserveQuota(id string, headers http.Header, observedAt time.T
 		m.mu.Unlock()
 		return false
 	}
+	recordQuotaExhaustion(auth, time.Now())
 	snapshot := auth.Clone()
 	m.mu.Unlock()
 	m.publishQuotaSnapshot(snapshot)

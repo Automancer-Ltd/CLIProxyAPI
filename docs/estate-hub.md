@@ -277,7 +277,9 @@ poll.
 A Codex websocket sends follow-up turns without a new selection, so the hub forwards no follow-up
 turn on an account past its included allowance unless `allow_credits` is set. With a floor, each
 turn on credits ends its stream and is accounted, and the client's next turn is selected, and
-checked against the floor, afresh. This also stops an open websocket from spending paid credits
+checked against the floor, afresh. Quota events inside a running stream (a window reaching 100%, a
+lower balance) take effect for the next turn at once; the hub also keeps the latest used-up window
+per account beside the balance, so no older copy of the account hides it. This also stops an open websocket from spending paid credits
 under the guard above. An account with a
 floor is polled every `interval` even while it serves traffic, so with the estate's 10 minutes a
 reading is never more than about 11 minutes old; with the refresher off, or an interval over 30

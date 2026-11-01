@@ -251,8 +251,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocketInterrupt(ctx conte
 		if !found || auth == nil {
 			auth, found = h.AuthManager.GetExecutionSessionAuthByID(sessionID, authID)
 		}
-		return found && auth != nil && !auth.Disabled && auth.Status != coreauth.StatusDisabled &&
-			coreauth.AuthServesWebsocketTurn(auth, time.Now())
+		return found && auth != nil && !auth.Disabled && auth.Status != coreauth.StatusDisabled
 	})
 	return sender.InterruptExecutionSession(ctx, sessionID, payload)
 }

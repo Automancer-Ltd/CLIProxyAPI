@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -717,6 +718,11 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			}
 			observeCodexTokenEvent(reporter, payload)
 			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
+			// Quota events reach routing only when the stream ends; a used-up window or a
+			// lower credit balance must stop the next turn on this socket (t10647).
+			if quota := helps.ParseCodexQuotaEventHeaders(payload); len(quota) > 0 {
+				cliproxyauth.ObserveStreamQuota(auth, quota, time.Now())
+			}
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 			// Steering acknowledgements, pending notifications and failures are opaque:
 			// preserve their IDs, input, sequence numbers and event types byte-for-byte.
