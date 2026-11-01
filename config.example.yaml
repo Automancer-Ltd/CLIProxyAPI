@@ -36,7 +36,8 @@ server:
 
   # Negotiated compression of downstream HTTP responses (including SSE streams).
   # Responses are compressed only when the client advertises zstd or gzip in
-  # Accept-Encoding; WebSocket upgrades are never wrapped.
+  # Accept-Encoding; WebSocket upgrades are never wrapped. Encoder memory is
+  # retained for the lifetime of an open stream and depends on prior pool usage.
   response-compression:
     # Default: true.
     enabled: true
@@ -353,6 +354,12 @@ client:
       enabled: false
       ttl: "24h"
       limit: 1024
+
+  claude:
+    # Show public Codex commentary as visible Claude text, retaining phase markers
+    # for replay. Genuine reasoning summaries remain thinking blocks.
+    # Default false preserves existing behavior for clients such as TTS consumers.
+    show-codex-commentary: false
 
 # Shared upstream behavior applies to OAuth and API-key credentials.
 upstream:
