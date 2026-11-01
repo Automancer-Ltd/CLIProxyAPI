@@ -165,11 +165,9 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			if !sawOutput || auth == nil {
 				return
 			}
-			now := time.Now()
-			headers := internallogging.GetResponseHeaders(ctx)
-			auth.Quota.ObserveResponseHeadersForProvider(provider, headers, now)
-			recordQuotaExhaustion(auth, now)
-			observeCreditSpend(auth, provider, headers, now)
+			// The cached headers have no observation time of their own, so apply them as
+			// a partial observation: a stale 60% must not clear a newer socket's 100%.
+			accountServedResponse(auth, provider, internallogging.GetResponseHeaders(ctx), time.Now())
 		}
 		var rewriter *StreamRewriter
 		if aliasResult.ForceMapping && strings.TrimSpace(aliasResult.OriginalAlias) != "" {

@@ -224,6 +224,19 @@ func AuthServesWebsocketTurn(auth *Auth, now time.Time) bool {
 	return !spent
 }
 
+// accountServedResponse applies a served response's quota and credit figures to the
+// ledger without touching credential health: a canceled delivery, or a result that is
+// stale for health because the token rotated during the request. The figures are a
+// partial observation, so a cached snapshot can only move a used-up window later, never
+// clear a newer socket's exhaustion.
+func accountServedResponse(auth *Auth, provider string, headers http.Header, now time.Time) {
+	if auth == nil {
+		return
+	}
+	ObserveStreamQuota(auth, headers, now)
+	observeCreditSpend(auth, provider, headers, now)
+}
+
 // ObserveStreamResponse accounts a completed duplex response whose stream reported no
 // credit balance: its cost is unknown until a newer poll, so the guard refuses the
 // account in the meantime. It is the stream counterpart of MarkResult's credit
