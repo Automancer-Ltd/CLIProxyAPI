@@ -1,0 +1,46 @@
+# The Automancer fork's pull request check. The workflows inherited from
+# upstream are disabled on this repository (they retarget pull requests to
+# upstream's dev branch, publish upstream's releases and enforce upstream's
+# contributor rules), so this is the fork's only CI.
+# The whole suite does not fit the five-minute budget on a hosted runner, so a
+# pull request builds the server and tests the Go packages it changes.
+name: estate-ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-24.04"') }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
+        run: go build -o /tmp/cli-proxy-api ./cmd/server
+      - name: Vet and test changed packages
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+        run: |
+          pkgs=$(git diff --name-only "$BASE_REF"...HEAD -- '*.go' | xargs -r -n1 dirname | sort -u |
+            while read -r dir; do [ -d "$dir" ] && echo "./$dir"; done)
+          if [ -z "$pkgs" ]; then
+            echo "No Go packages changed."
+            exit 0
+          fi
+          echo "$pkgs"
+          go vet $pkgs
+          go test -count=1 $pkgs
