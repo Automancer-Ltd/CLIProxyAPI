@@ -2279,7 +2279,6 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 	if executor == nil {
 		return auth, &Error{Code: "executor_not_found", Message: "executor not registered for provider", HTTPStatus: http.StatusBadRequest}
 	}
-	executor = executorForAuth(executor, auth)
 
 	routeModel := strings.TrimSpace(model)
 	if routeModel == "" {
@@ -2315,6 +2314,17 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 
 	execCtx := newUpstreamAttemptContext(ctx)
 	execCtx = syncMetadataSessionToContext(execCtx, opts.Metadata)
+	// Prepare the credential as request execution does, so state the executor mints
+	// before a request (a Meta API key, for example) is saved instead of discarded.
+	prepared, errPrepare := m.prepareRequestAuth(execCtx, executor, auth)
+	if errPrepare != nil {
+		updated, _ := m.GetByID(auth.ID)
+		return updated, errPrepare
+	}
+	if prepared != nil {
+		auth = prepared
+	}
+	executor = executorForAuth(executor, auth)
 	executionSeq := m.nextExecutionSeq()
 	accessToken := authAccessTokenForRequest(execCtx, auth, opts.Headers)
 	credVersion := auth.CredentialVersion

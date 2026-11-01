@@ -1254,6 +1254,10 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 					c.JSON(http.StatusOK, gin.H{"status": "error", "error": "Failed to save authentication tokens"})
 					return
 				}
+				if target, okTarget := GetOAuthSessionTarget(state); okTarget && target.AuthID != "" && target.VerifyAfterLogin {
+					h.completeVerifiedPluginRecovery(ctx, c, state, target, records[0])
+					return
+				}
 				CompleteOAuthSession(state)
 				c.JSON(http.StatusOK, gin.H{"status": "ok"})
 				return
@@ -1264,6 +1268,40 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "wait"})
+}
+
+// completeVerifiedPluginRecovery finishes a targeted plugin re-login that asked for
+// verification, as the Codex flow does: it checks that the runtime adopted the new
+// grant, runs one inference check on it, and records both outcomes on the session so
+// later status polls report them too.
+func (h *Handler) completeVerifiedPluginRecovery(ctx context.Context, c *gin.Context, state string, target oauthRecoveryTarget, record *coreauth.Auth) {
+	savedGrantHash := authGrantFingerprint(record)
+	var adopted bool
+	var adoptedVersion, adoptedEpoch uint64
+	adoptErr := "Credential saved to storage, but runtime did not adopt the new credential version"
+	if h != nil && h.authManager != nil {
+		if runtimeAuth, okRuntime := h.authManager.GetByID(target.AuthID); okRuntime && runtimeAuth != nil && authGrantFingerprint(runtimeAuth) == savedGrantHash {
+			adopted = true
+			adoptedVersion = runtimeAuth.CredentialVersion
+			adoptedEpoch = runtimeAuth.RegistrationEpoch
+			adoptErr = ""
+		}
+	}
+	var verifyErr string
+	if adopted {
+		if _, errVerify := h.authManager.VerifyInference(ctx, target.AuthID, target.VerifyModel); errVerify != nil {
+			verifyErr = coreauth.SanitizeRenewalMessage(errVerify.Error())
+		}
+	}
+	CompleteOAuthSessionWithOutcome(state, target.AuthID, savedGrantHash, true, adopted, false, 0, 0, adoptedVersion, adoptedEpoch, adoptErr, verifyErr)
+	resp := gin.H{"status": "ok", "auth_id": target.AuthID, "saved": true, "adopted": adopted}
+	if adoptErr != "" {
+		resp["adoption_error"] = adoptErr
+	}
+	if verifyErr != "" {
+		resp["verification_error"] = verifyErr
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func writePluginPollFailureStatus(c *gin.Context, state, message string) {

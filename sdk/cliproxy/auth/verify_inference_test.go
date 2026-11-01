@@ -68,3 +68,37 @@ func TestVerifyInferenceResolvesExecutorLikeExecution(t *testing.T) {
 		t.Fatal("VerifyInference(kimi-ai) sent no request to the kimi executor")
 	}
 }
+
+// mintingExecutor mints a key during request preparation, as the Meta executor does.
+type mintingExecutor struct {
+	*authFallbackExecutor
+}
+
+func (e mintingExecutor) ShouldPrepareRequestAuth(auth *Auth) bool {
+	return auth != nil && auth.Metadata["minted_key"] == nil
+}
+
+func (e mintingExecutor) PrepareRequestAuth(_ context.Context, auth *Auth) (*Auth, error) {
+	if auth.Metadata == nil {
+		auth.Metadata = map[string]any{}
+	}
+	auth.Metadata["minted_key"] = "minted-1"
+	return auth, nil
+}
+
+// VerifyInference must prepare the credential as request execution does: a key the
+// executor mints for the request is kept on the credential, not discarded.
+func TestVerifyInferenceKeepsPreparedCredential(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	m.RegisterExecutor(mintingExecutor{&authFallbackExecutor{id: "codex"}})
+	auth := &Auth{ID: "verify-minting", Provider: "codex", Metadata: map[string]any{}}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register %s: %v", auth.ID, errRegister)
+	}
+
+	_, _ = m.VerifyInference(context.Background(), auth.ID, "gpt-5")
+	saved, ok := m.GetByID(auth.ID)
+	if !ok || saved == nil || saved.Metadata["minted_key"] != "minted-1" {
+		t.Fatalf("credential after VerifyInference = %#v; want the minted key kept", saved)
+	}
+}

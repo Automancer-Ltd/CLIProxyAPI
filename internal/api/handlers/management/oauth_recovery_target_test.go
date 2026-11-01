@@ -8,10 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // A targeted Codex re-login must rewrite the target credential where it is stored,
@@ -102,5 +105,73 @@ func TestStartOAuthV8RefusesTargetForLoginsThatIgnoreIt(t *testing.T) {
 		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "not supported") {
 			t.Fatalf("targeted claude login %s = %d %s; want 400 not supported", body, w.Code, w.Body.String())
 		}
+	}
+}
+
+// A targeted plugin re-login that asks for verification must run it and report a
+// failure: it used to answer status ok without checking the credential at all.
+func TestV8PluginReloginWithVerifyReportsVerificationFailure(t *testing.T) {
+	authDir := t.TempDir()
+	targetFile := filepath.Join(authDir, "account.json")
+	if errWrite := os.WriteFile(targetFile, []byte(`{"type":"zcode","email":"user@example.com","access_token":"old-token"}`), 0o600); errWrite != nil {
+		t.Fatalf("write target file: %v", errWrite)
+	}
+
+	host := pluginhost.New()
+	host.RegisterPluginForTest("verify-zcode-oauth", pluginapi.Plugin{
+		Capabilities: pluginapi.Capabilities{
+			AuthProvider: &testAuthProvider{
+				identifier: "zcode-zai",
+				startLogin: func(_ context.Context, req pluginapi.AuthLoginStartRequest) (pluginapi.AuthLoginStartResponse, error) {
+					state := "state-verify-relogin"
+					t.Cleanup(func() { CancelOAuthSession(state) })
+					return pluginapi.AuthLoginStartResponse{Provider: req.Provider, URL: "https://portal.example/login", State: state, ExpiresAt: time.Now().Add(time.Hour)}, nil
+				},
+				pollLogin: func(_ context.Context, _ pluginapi.AuthLoginPollRequest) (pluginapi.AuthLoginPollResponse, error) {
+					return pluginapi.AuthLoginPollResponse{
+						Status: pluginapi.AuthLoginStatusSuccess,
+						Auth: pluginapi.AuthData{
+							Provider:    "zcode",
+							ID:          "plugin-generated.json",
+							FileName:    "plugin-generated.json",
+							StorageJSON: []byte(`{"type":"zcode","access_token":"new-token"}`),
+							Metadata:    map[string]any{"type": "zcode", "email": "user@example.com", "access_token": "new-token"},
+						},
+					}, nil
+				},
+			},
+		},
+	})
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+		ID:         "account.json",
+		FileName:   "account.json",
+		Provider:   "zcode",
+		Metadata:   map[string]any{"email": "user@example.com", "oauth_provider": "zcode-zai", "access_token": "old-token"},
+		Attributes: map[string]string{"path": targetFile},
+	}); errRegister != nil {
+		t.Fatalf("register target: %v", errRegister)
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir, Port: 8317}, manager)
+	h.SetPluginHost(host)
+	router := gin.New()
+	router.POST("/v8/management/oauth/auth-url", h.StartOAuthV8)
+	router.GET("/v8/management/get-auth-status", h.GetAuthStatus)
+
+	start := httptest.NewRecorder()
+	router.ServeHTTP(start, httptest.NewRequest(http.MethodPost, "/v8/management/oauth/auth-url", strings.NewReader(`{"provider":"zcode-zai","name":"account.json","verify":true}`)))
+	if start.Code != http.StatusOK {
+		t.Fatalf("start relogin status=%d body=%s", start.Code, start.Body.String())
+	}
+	poll := httptest.NewRecorder()
+	router.ServeHTTP(poll, httptest.NewRequest(http.MethodGet, "/v8/management/get-auth-status?state=state-verify-relogin", nil))
+	if poll.Code != http.StatusOK || !strings.Contains(poll.Body.String(), `"verification_error"`) {
+		t.Fatalf("poll relogin status=%d body=%s; want a verification_error (no executor serves zcode)", poll.Code, poll.Body.String())
+	}
+	again := httptest.NewRecorder()
+	router.ServeHTTP(again, httptest.NewRequest(http.MethodGet, "/v8/management/get-auth-status?state=state-verify-relogin", nil))
+	if !strings.Contains(again.Body.String(), `"verification_error"`) {
+		t.Fatalf("second status poll body=%s; want the verification_error kept on the session", again.Body.String())
 	}
 }
