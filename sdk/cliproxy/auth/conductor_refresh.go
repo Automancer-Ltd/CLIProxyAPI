@@ -1309,7 +1309,15 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 	}
 
 	base := auth.Clone()
-	updated, err := exec.Refresh(ctx, base.Clone())
+	var updated *Auth
+	var err error
+	if authority := m.hubAuthority(); authority != nil {
+		updated, err = authority.Refresh(ctx, base.Clone(), func(inner context.Context, a *Auth) (*Auth, error) {
+			return exec.Refresh(context.WithValue(inner, hubRefreshKey{}, hubRefreshPermission{a.HubAccountID, a.HubGeneration}), a)
+		})
+	} else {
+		updated, err = exec.Refresh(ctx, base.Clone())
+	}
 	now := time.Now()
 	if err != nil && errors.Is(err, context.Canceled) {
 		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)

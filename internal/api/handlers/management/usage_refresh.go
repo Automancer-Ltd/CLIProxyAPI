@@ -186,6 +186,11 @@ func (h *Handler) pollUsage(ctx context.Context, auth *coreauth.Auth, fetch usag
 			return record
 		}
 		auth, token = refreshed, tokenValueForAuth(refreshed)
+		if err := h.authManager.AuthorizeHub(ctx, auth); err != nil {
+			record.Error = err.Error()
+			return record
+		}
+		client.Transport = h.apiCallTransport(auth, "")
 		result, errFetch = fetch(ctx, client, auth, token)
 	}
 	if errFetch != nil {
@@ -206,6 +211,11 @@ func (h *Handler) pollUsage(ctx context.Context, auth *coreauth.Auth, fetch usag
 // usageToken returns the bearer token a provider's usage endpoint accepts.
 // Muse reports usage on the key-mint call, which takes the device (dca) token.
 func (h *Handler) usageToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
+	if h.authManager != nil {
+		if err := h.authManager.AuthorizeHub(ctx, auth); err != nil {
+			return "", err
+		}
+	}
 	if strings.EqualFold(auth.Provider, "meta") {
 		for _, key := range []string{"dca_token", "access_token"} {
 			if value, _ := auth.Metadata[key].(string); strings.HasPrefix(strings.TrimSpace(value), "dca:") {

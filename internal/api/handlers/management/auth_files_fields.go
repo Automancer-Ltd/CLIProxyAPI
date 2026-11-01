@@ -147,7 +147,7 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": updatedAuth.Disabled})
 }
 
 // patchPluginVirtualSourceStatus toggles disabled on a plugin multi-auth source file and all
@@ -1002,8 +1002,25 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	if record == nil {
 		return "", fmt.Errorf("token record is nil")
 	}
-	h.mergeExistingAuthFileMetadata(record)
 	store := h.tokenStoreWithBaseDir()
+	if _, shared := store.(coreauth.HubAuthority); shared {
+		if h.postAuthHook != nil {
+			if err := h.postAuthHook(ctx, record); err != nil {
+				return "", err
+			}
+		}
+		path, err := store.Save(coreauth.WithAuthCreationIntent(ctx), record)
+		if err != nil {
+			return "", err
+		}
+		if h.postAuthPersistHook != nil {
+			err = h.postAuthPersistHook(ctx, record)
+		} else if h.authManager != nil {
+			_, err = h.authManager.Register(ctx, record)
+		}
+		return path, err
+	}
+	h.mergeExistingAuthFileMetadata(record)
 	if store == nil {
 		return "", fmt.Errorf("token store unavailable")
 	}
