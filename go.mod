@@ -15,7 +15,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/joho/godotenv v1.5.1
-	github.com/klauspost/compress v1.17.4
+	github.com/klauspost/compress v1.18.7
 	github.com/libp2p/zeroconf/v2 v2.2.0
 	github.com/miekg/dns v1.1.43
 	github.com/minio/minio-go/v7 v7.0.66
@@ -32,12 +32,12 @@ require (
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
 	github.com/tiktoken-go/tokenizer v0.8.1
-	golang.org/x/crypto v0.57.0
-	golang.org/x/net v0.60.0
+	golang.org/x/crypto v0.58.0
+	golang.org/x/net v0.62.0
 	golang.org/x/oauth2 v0.30.0
-	golang.org/x/sync v0.23.0
-	golang.org/x/sys v0.48.0
-	golang.org/x/text v0.42.0
+	golang.org/x/sync v0.24.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/text v0.43.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
 )
