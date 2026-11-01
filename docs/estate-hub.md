@@ -37,6 +37,13 @@ GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build \
   -o cliproxyapi-darwin-arm64 ./cmd/server
 ```
 
+Before replacing the executable, record a baseline with estate-watch
+`deploy.start({product: "estate-hub", host: "m6", commit: "<full sha>"})` and keep the returned run
+id. It reads the served revision from `https://hub-svc.automancer.uk/revision`, which sits behind
+Cloudflare Access and reports only the commit; no management key is involved. After the swap, call
+`deploy.verify({run: "<run id>"})` and read its verdict with `deploy.get`. `deploy.recent({product:
+"estate-hub"})` lists the retained runs.
+
 The m6 service is `gui/$(id -u)/uk.automancer.hub`; its executable is
 `~/.local/hub/cliproxyapi`. Record the current version and checksum, keep that executable as
 `cliproxyapi.prev-<revision>`, and upload the new binary to a separate staging path. Check its
