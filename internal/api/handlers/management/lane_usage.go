@@ -79,6 +79,7 @@ type laneUsageRow struct {
 // laneLedger keeps token usage per lane, provider, model and UTC hour for the
 // requests whose client sent usage.LaneHeader. It is a usage plugin.
 type laneLedger struct {
+	flushMu sync.Mutex // Serialize periodic and shutdown writes to the same file.
 	mu      sync.Mutex
 	buckets map[laneUsageKey]*laneUsageTotals
 	path    string
@@ -170,6 +171,8 @@ func (l *laneLedger) load(path string) {
 
 // flush drops buckets past retention and writes the ledger when it changed.
 func (l *laneLedger) flush() {
+	l.flushMu.Lock()
+	defer l.flushMu.Unlock()
 	l.mu.Lock()
 	if !l.dirty || l.path == "" {
 		l.mu.Unlock()
