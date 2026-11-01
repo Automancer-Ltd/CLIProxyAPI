@@ -111,10 +111,18 @@ func (l *creditLedger) observeResponse(id string, reported float64, hasReported,
 	switch {
 	case hasReported:
 		if reported < current.Balance {
-			current.Balance, current.UpdatedAt = reported, now
+			current.Balance = reported
+		}
+		// Any served response is a newer observation than a poll that started before
+		// it ended, even when its balance did not fall (t10647 review).
+		if now.After(current.UpdatedAt) {
+			current.UpdatedAt = now
 		}
 	case onCredits:
-		current.Unknown, current.UpdatedAt = true, now
+		current.Unknown = true
+		if now.After(current.UpdatedAt) {
+			current.UpdatedAt = now
+		}
 	default:
 		return
 	}
@@ -153,17 +161,22 @@ func (l *creditLedger) revokeCredits(id string, headers http.Header, now time.Ti
 	if current.ReadAt.IsZero() {
 		return
 	}
-	changed := false
-	if hasCreditsSet && !hasCredits && current.HasCredits {
-		current.HasCredits, changed = false, true
+	revoked := (hasCreditsSet && !hasCredits) || (unlimitedSet && unlimited)
+	if !revoked {
+		return
 	}
-	if unlimitedSet && unlimited && !current.Unlimited {
-		current.Unlimited, changed = true, true
+	if hasCreditsSet && !hasCredits {
+		current.HasCredits = false
 	}
-	if changed {
+	if unlimitedSet && unlimited {
+		current.Unlimited = true
+	}
+	// Advance even when the flag was already revoked: a poll that started between two
+	// denials must not re-enable spending (t10647 review).
+	if now.After(current.UpdatedAt) {
 		current.UpdatedAt = now
-		l.readings[id] = current
 	}
+	l.readings[id] = current
 }
 
 // observeExhaustion records when the included allowance returns, as of observedAt. A
@@ -186,14 +199,24 @@ func (l *creditLedger) observeExhaustion(key string, until, observedAt time.Time
 	}
 }
 
-// recordQuotaExhaustion stores the credential's current quota snapshot in the ledger.
-// Only a snapshot that carries usage windows is complete; one without (a response that
-// reported only credits) can only move the return later.
+// recordQuotaExhaustion stores a live observation of the credential's quota snapshot.
+// It is partial: a used-up window can only move later, because a live response or
+// stream event may omit the window that is used up or carry an older cached one.
 func recordQuotaExhaustion(auth *Auth, now time.Time) {
+	recordQuotaExhaustionWith(auth, now, false)
+}
+
+// recordQuotaSnapshot stores the usage poll's full snapshot, the only observation
+// allowed to clear a used-up window whose reset the provider reported.
+func recordQuotaSnapshot(auth *Auth, now time.Time) {
+	recordQuotaExhaustionWith(auth, now, true)
+}
+
+func recordQuotaExhaustionWith(auth *Auth, now time.Time, canClear bool) {
 	if auth == nil || auth.Quota.ObservedAt.IsZero() {
 		return
 	}
-	complete := len(quotaWindowsFromSignals(auth.Quota.Signals, auth.Quota.ObservedAt)) > 0
+	complete := canClear && len(quotaWindowsFromSignals(auth.Quota.Signals, auth.Quota.ObservedAt)) > 0
 	credits.observeExhaustion(creditLedgerKey(auth), includedExhaustedUntil(auth.Quota, now), auth.Quota.ObservedAt, complete)
 }
 

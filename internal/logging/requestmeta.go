@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 type endpointKey struct{}
@@ -31,9 +30,8 @@ type responseStatusHolder struct {
 }
 
 type responseHeadersHolder struct {
-	mu         sync.RWMutex
-	headers    http.Header
-	observedAt time.Time
+	mu      sync.RWMutex
+	headers http.Header
 }
 
 func WithEndpoint(ctx context.Context, endpoint string) context.Context {
@@ -125,7 +123,6 @@ func SetResponseHeaders(ctx context.Context, headers http.Header) {
 	holder.mu.Lock()
 	defer holder.mu.Unlock()
 	holder.headers = cloneHTTPHeader(headers)
-	holder.observedAt = time.Now()
 }
 
 // MergeResponseHeaders adds headers observed after the initial HTTP response,
@@ -143,7 +140,6 @@ func MergeResponseHeaders(ctx context.Context, headers http.Header) {
 	if holder.headers == nil {
 		holder.headers = make(http.Header, len(headers))
 	}
-	holder.observedAt = time.Now()
 	for key, values := range headers {
 		canonicalKey := http.CanonicalHeaderKey(key)
 		if canonicalKey == "" {
@@ -175,23 +171,6 @@ func GetResponseHeaders(ctx context.Context) http.Header {
 	holder.mu.RLock()
 	defer holder.mu.RUnlock()
 	return cloneHTTPHeader(holder.headers)
-}
-
-// GetResponseHeadersObservedAt returns when the held headers were last set or merged. A
-// cached snapshot keeps its original observation time, so a consumer can order it
-// against observations from other connections instead of stamping it with the current
-// time (t10647 review).
-func GetResponseHeadersObservedAt(ctx context.Context) time.Time {
-	if ctx == nil {
-		return time.Time{}
-	}
-	holder, ok := ctx.Value(responseHeadersKey{}).(*responseHeadersHolder)
-	if !ok || holder == nil {
-		return time.Time{}
-	}
-	holder.mu.RLock()
-	defer holder.mu.RUnlock()
-	return holder.observedAt
 }
 
 func cloneHTTPHeader(src http.Header) http.Header {

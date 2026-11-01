@@ -61,3 +61,56 @@ func TestCachedResponseHeadersCannotClearANewerExhaustion(t *testing.T) {
 		t.Fatal("cached 60% headers cleared a newer 100%: served; want refused")
 	}
 }
+
+// Merging a credits-only event must not refresh the observation time of older window
+// headers retained in the holder: the cached 60% cannot clear a newer 100% (t10647
+// review).
+func TestCreditsOnlyMergeDoesNotRefreshCachedWindowHeaders(t *testing.T) {
+	const model = "codex-credit-merge-headers-test-model"
+	now := time.Now()
+	auth := &Auth{ID: "credit-merge-headers", Provider: "codex", Status: StatusActive,
+		Metadata: map[string]any{MetadataCreditsFloor: 1000.0},
+		Quota: QuotaState{ObservedAt: now.Add(-time.Minute), Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "60",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
+		}}}
+	m := NewManager(nil, nil, nil)
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+	t.Cleanup(func() { credits.forget(creditLedgerKey(auth)) })
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register: %v", errRegister)
+	}
+	m.ObserveCredits(auth, CreditReading{Balance: 900, HasCredits: true, ReadAt: now})
+
+	ctx := internallogging.WithResponseHeadersHolder(context.Background())
+	cached := http.Header{}
+	cached.Set("X-Codex-Primary-Used-Percent", "60")
+	cached.Set("X-Codex-Primary-Window-Minutes", "10080")
+	cached.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10))
+	cached.Set("X-Codex-Credits-Balance", "900")
+	internallogging.SetResponseHeaders(ctx, cached)
+
+	// Another socket reports the window used up after the cached snapshot.
+	exhausted := http.Header{}
+	exhausted.Set("X-Codex-Primary-Used-Percent", "100")
+	exhausted.Set("X-Codex-Primary-Window-Minutes", "10080")
+	exhausted.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(time.Hour).Unix(), 10))
+	ObserveStreamQuota(auth, exhausted, time.Now())
+	if _, spent := authIncludedSpentUntil(auth, time.Now()); !spent {
+		t.Fatal("setup: 100% with balance 900 below the floor: served; want refused")
+	}
+
+	// A later credits-only event merges into the same holder.
+	internallogging.MergeResponseHeaders(ctx, http.Header{"X-Codex-Credits-Balance": {"900"}})
+
+	current, _ := m.GetByID(auth.ID)
+	m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: "codex", Model: model, Success: true,
+		CredentialVersion: current.CredentialVersion, RegistrationEpoch: current.RegistrationEpoch})
+
+	if _, spent := authIncludedSpentUntil(auth, time.Now()); !spent {
+		t.Fatal("a credits-only merge refreshed the cached 60% and cleared a newer 100%: served; want refused")
+	}
+}

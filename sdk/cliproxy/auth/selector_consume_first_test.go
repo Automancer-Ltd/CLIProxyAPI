@@ -360,8 +360,8 @@ func TestCreditsFloorSpendsGrantedCreditsDownToTheFloor(t *testing.T) {
 		}
 	}
 
-	// Traffic only lowers the reading until a newer poll.
-	m.ObserveCredits(spent, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now})
+	// Traffic only lowers the reading until a newer poll (started after those responses).
+	m.ObserveCredits(spent, CreditReading{Balance: 1500, HasCredits: true, ReadAt: time.Now()})
 	respond := func(balance string) {
 		headers := http.Header{}
 		headers.Set("X-Codex-Primary-Used-Percent", "100")
@@ -684,7 +684,7 @@ func TestUsedUpWindowReachesEveryCopyAndOpenSockets(t *testing.T) {
 		"X-Codex-Primary-Window-Minutes": "10080",
 		"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(7*24*time.Hour).Unix(), 10),
 	}}
-	recordQuotaExhaustion(reset, now.Add(2*time.Second))
+	recordQuotaSnapshot(reset, now.Add(2*time.Second))
 	if !AuthServesWebsocketTurn(stale, now.Add(2*time.Second)) {
 		t.Fatal("after a complete snapshot shows the window reset: next websocket turn refused; want allowed")
 	}
