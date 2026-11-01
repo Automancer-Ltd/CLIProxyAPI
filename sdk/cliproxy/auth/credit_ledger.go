@@ -121,6 +121,51 @@ func (l *creditLedger) observeResponse(id string, reported float64, hasReported,
 	l.readings[id] = current
 }
 
+// parseCreditFlag reads a boolean credit header, reporting whether it was present.
+func parseCreditFlag(headers http.Header, name string) (value, set bool) {
+	values, ok := headers[http.CanonicalHeaderKey(name)]
+	if !ok || len(values) == 0 {
+		return false, false
+	}
+	parsed, errParse := strconv.ParseBool(strings.TrimSpace(values[len(values)-1]))
+	if errParse != nil {
+		return false, false
+	}
+	return parsed, true
+}
+
+// revokeCredits applies a live observation that takes spending permission away:
+// has_credits=false or unlimited=true. Only a poll may grant permission back, so a
+// stale live report cannot re-enable spending that the provider has disallowed
+// (t10647 review).
+func (l *creditLedger) revokeCredits(id string, headers http.Header, now time.Time) {
+	if len(headers) == 0 {
+		return
+	}
+	hasCredits, hasCreditsSet := parseCreditFlag(headers, "X-Codex-Credits-Has-Credits")
+	unlimited, unlimitedSet := parseCreditFlag(headers, "X-Codex-Credits-Unlimited")
+	if !hasCreditsSet && !unlimitedSet {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	current := l.readings[id]
+	if current.ReadAt.IsZero() {
+		return
+	}
+	changed := false
+	if hasCreditsSet && !hasCredits && current.HasCredits {
+		current.HasCredits, changed = false, true
+	}
+	if unlimitedSet && unlimited && !current.Unlimited {
+		current.Unlimited, changed = true, true
+	}
+	if changed {
+		current.UpdatedAt = now
+		l.readings[id] = current
+	}
+}
+
 // observeExhaustion records when the included allowance returns, as of observedAt. A
 // complete observation (a response's or a poll's full quota snapshot) replaces an older
 // one; a partial one (a mid-stream quota event) can only move the return later, since
@@ -164,6 +209,7 @@ func ObserveStreamQuota(auth *Auth, headers http.Header, now time.Time) {
 		return
 	}
 	key := creditLedgerKey(auth)
+	credits.revokeCredits(key, headers, now)
 	credits.observeExhaustion(key, includedExhaustedUntil(QuotaState{Signals: signals, ObservedAt: now}, now), now, false)
 	if reported, errParse := strconv.ParseFloat(strings.TrimSpace(signals["X-Codex-Credits-Balance"]), 64); errParse == nil &&
 		!math.IsNaN(reported) && !math.IsInf(reported, 0) {
@@ -253,7 +299,9 @@ func observeCreditSpend(auth *Auth, provider string, headers http.Header, now ti
 	if auth == nil || !strings.EqualFold(strings.TrimSpace(provider), "codex") {
 		return
 	}
+	key := creditLedgerKey(auth)
+	credits.revokeCredits(key, headers, now)
 	reported, errParse := strconv.ParseFloat(strings.TrimSpace(headers.Get("X-Codex-Credits-Balance")), 64)
 	hasReported := errParse == nil && !math.IsNaN(reported) && !math.IsInf(reported, 0)
-	credits.observeResponse(creditLedgerKey(auth), reported, hasReported, !authExhaustedUntil(auth, now).IsZero(), now)
+	credits.observeResponse(key, reported, hasReported, !authExhaustedUntil(auth, now).IsZero(), now)
 }

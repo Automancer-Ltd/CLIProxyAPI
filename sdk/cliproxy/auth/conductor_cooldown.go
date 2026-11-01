@@ -1370,11 +1370,18 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		auth.UpdatedAt = now
 
 		if !result.SkipQuotaObservation {
-			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
+			// The holder may still carry an older response's headers when this one had no
+			// quota figures. Keep their original observation time, so they cannot clear a
+			// newer used-up window recorded by another connection (t10647 review).
+			responseObservedAt := internallogging.GetResponseHeadersObservedAt(ctx)
+			if responseObservedAt.IsZero() {
+				responseObservedAt = now
+			}
+			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, responseObservedAt)
 			recordQuotaExhaustion(auth, now)
-			observeCreditSpend(auth, result.Provider, responseHeaders, now)
+			observeCreditSpend(auth, result.Provider, responseHeaders, responseObservedAt)
 			if modelState != nil {
-				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
+				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, responseObservedAt)
 			}
 		}
 
