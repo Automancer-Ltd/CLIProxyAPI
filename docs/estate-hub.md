@@ -25,7 +25,10 @@ keep their committed line endings. Boat shells can inherit `CAP_DAC_READ_SEARCH`
 permission-denial fixtures even for a non-root user. Run the tests with that capability dropped:
 `setpriv --inh-caps=-dac_read_search --ambient-caps=-dac_read_search go test ./...`.
 
-Build the deployed artifact from the verified commit, with its revision embedded:
+Build the deployed artifact from the verified commit, with its revision embedded. m6 has no Go
+toolchain: download the `go.mod` version's `darwin-arm64` archive from go.dev into the lane's scratch
+folder, check its sha256 against `https://go.dev/dl/?mode=json&include=all`, and build with
+`GOTOOLCHAIN=local` and `GOPATH`/`GOCACHE` under the same scratch folder (about 30 seconds on m6):
 
 ```bash
 revision=$(git rev-parse HEAD)
@@ -45,6 +48,12 @@ Verify the running revision, `/healthz`, `/hub`, and the credential usage respon
 the account inventory before and after, and inspect poll errors. Executor's `hub-readonly.usage`
 reads that inventory without exposing the management key. If direct SSH from a lane device
 refuses its key, use that device's configured fleet transit route; never copy private keys.
+
+On m6 the hub itself listens on `127.0.0.1:8317`, which Tailscale serves to the tailnet as
+`https://waseems-mac-mini-m6.taild6c90e.ts.net:8317`. `127.0.0.1:8316` is `hub-forward`, which
+passes every header through to that address. m6 has no Go toolchain and no BWS wrappers. To read a
+management endpoint, run `bwrun K=AUT_HUB_MANAGEMENT_KEY` on auto-vps (`hc exec --on auto-vps`) and
+send the key to the tailnet address on stdin (`curl -H @-`), never in argv.
 
 Rollback: restore the saved executable over `~/.local/hub/cliproxyapi`, restart the same launch
 agent, and repeat the health and usage checks. The binary update does not require changing the
@@ -349,6 +358,33 @@ With a pin, add `"X-CPA-Account"` to the same `http_headers` table. The tool the
 hub's `/v1/images/generations` and `/v1/images/edits` (model `gpt-image-2`), which the hub serves
 from a Codex subscription account like any other request. No local Codex login is needed. The hub
 copies only named headers upstream, so this one never reaches OpenAI.
+
+## Usage per lane
+
+The hub keeps the tokens each estate lane spends, so the tracker can show cost per finished item
+by route (t10833). A client names its lane in an `X-CPA-Lane` header, for example `ln-1a2b3c4d`.
+The hub reads the header into the request's usage record and never sends it upstream. Requests
+without the header, or with a value that is not a short name (letters, digits, `.`, `_`, `:`, `-`,
+at most 64 characters), are not kept.
+
+- Claude Code: `ANTHROPIC_CUSTOM_HEADERS="X-CPA-Lane: ln-1a2b3c4d"` in the lane's environment.
+  A second header goes on its own line in the same variable (for example a pin).
+- Codex: under `[model_providers.cliproxy]`, `env_http_headers = { "X-CPA-Lane" = "CPA_LANE" }`
+  sends the value of the `CPA_LANE` environment variable when it is set.
+
+The ledger holds one bucket per UTC hour, lane, provider and model: `requests`, `failed`, and the
+token counts `input_tokens` (uncached input), `cache_read_tokens`, `cache_write_tokens`,
+`output_tokens` (without reasoning), `reasoning_tokens`, `unclassified_tokens` (a provider whose
+split is unknown) and `total_tokens`. These buckets do not overlap, so they can be priced. It is
+saved every minute and at shutdown to `<auth-dir>/lane-usage.cache` and keeps 100 days.
+
+`GET /v8/management/observability/usage/lanes?since=&until=&lane=` (management key) reads it.
+`since` and `until` are RFC 3339 times or Unix milliseconds (default: the last 24 hours); `lane`
+may repeat or hold a comma-separated list (default: every lane). An hour counts when it starts in
+[`since` rounded down to the hour, `until`). The answer is `{since, until, lanes: [{lane,
+first_hour, last_hour, requests, failed, <token counts>, models: [{provider, model, requests,
+failed, <token counts>}]}]}`, the latest lane first. The hub knows models, not Dispatcher routes:
+the tracker joins each lane to its route.
 
 ## Reading the state (for a dashboard)
 

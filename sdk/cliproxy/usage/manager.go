@@ -17,6 +17,11 @@ import (
 // DefaultServiceTier is retained for direct SDK and non-OpenAI usage callers.
 const DefaultServiceTier = "default"
 
+// LaneHeader is the client request header that names the estate lane spending
+// the request (for example "ln-1a2b3c4d"). The hub reads it into usage records
+// only; executors never copy client headers upstream, so it is not forwarded.
+const LaneHeader = "X-CPA-Lane"
+
 // AutoServiceTier is the OpenAI request semantics when service_tier is omitted.
 // OpenAI HTTP handlers set it explicitly, without changing other providers'
 // historical direct-SDK default.
@@ -41,7 +46,9 @@ type Record struct {
 	// IsNativeKey reports whether the client API key was authenticated by CPA's native config provider.
 	IsNativeKey bool
 	// AccessProvider identifies the client request authentication provider (e.g. "config-inline" or plugin ID).
-	AccessProvider  string
+	AccessProvider string
+	// Lane carries the client's LaneHeader value, empty when the client sent none.
+	Lane            string
 	SessionID       string
 	ParentSessionID string
 	AuthID          string
@@ -428,6 +435,7 @@ func CaptureIdentity(ctx context.Context) context.Context {
 	if ctx == nil {
 		return context.Background()
 	}
+	ctx = CaptureLane(ctx)
 	if HasCapturedIdentity(ctx) {
 		return ctx
 	}
@@ -745,6 +753,9 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 		if provider := AccessProviderFromContext(ctx); provider != "" {
 			record.AccessProvider = provider
 		}
+	}
+	if strings.TrimSpace(record.Lane) == "" {
+		record.Lane = LaneFromContext(ctx)
 	}
 	if !record.IsNativeKey {
 		if nativeExplicit, ok := IsNativeKeyFromContext(ctx); ok {
