@@ -281,7 +281,8 @@ func (e *CodexExecutor) refreshLocked(ctx context.Context, auth *cliproxyauth.Au
 		needSIWC = false
 	}
 
-	if cliproxyauth.IsForceRefreshContext(ctx) {
+	forceRefresh := cliproxyauth.IsForceRefreshContext(ctx)
+	if forceRefresh {
 		needOuter = hasOuter
 		needSIWC = hasSIWC
 	} else if explicitUnscheduled {
@@ -292,10 +293,24 @@ func (e *CodexExecutor) refreshLocked(ctx context.Context, auth *cliproxyauth.Au
 			needSIWC = hasSIWC
 		}
 	}
+	rejectedOuter := !diskRotatedOuter && auth.RejectedRefreshToken != "" && outerRefreshToken == strings.TrimSpace(auth.RejectedRefreshToken)
+	if rejectedOuter {
+		needOuter = false
+	}
+	rejectedSIWC := !diskRotatedSIWC && auth.RejectedSIWCRefreshToken != "" && siwcRefreshToken == strings.TrimSpace(auth.RejectedSIWCRefreshToken)
+	if rejectedSIWC {
+		needSIWC = false
+	}
 
 	if !needOuter && !needSIWC {
+		// A forced refresh that finds only an already-rejected grant must not report
+		// success with the stale token: say the credential needs a new sign-in.
+		if forceRefresh && (rejectedOuter || rejectedSIWC) {
+			return nil, statusErr{code: http.StatusUnauthorized, msg: "codex executor: the refresh token was already rejected; sign in again"}
+		}
 		if diskRotatedOuter || diskRotatedSIWC {
 			patch := codexauth.NewCredentialRefreshPatchWithDiskBaseline(beforeRefresh.Metadata, diskBaseline, auth.Metadata, diskRotatedOuter, diskRotatedSIWC)
+			patch.SetUpstreamRefreshed(false)
 			auth.CodexRefreshPatch = patch
 			if storage, ok := auth.Storage.(*codexauth.CodexTokenStorage); ok && storage != nil {
 				clonedStorage := *storage
@@ -439,11 +454,8 @@ func (e *CodexExecutor) refreshLocked(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	if !outerRefreshed && !siwcRefreshed && !diskRotatedOuter && !diskRotatedSIWC {
-		if outerErr != nil {
-			return nil, outerErr
-		}
-		if siwcErr != nil {
-			return nil, siwcErr
+		if errCombined := codexauth.NewPartitionRefreshError(outerErr, siwcErr); errCombined != nil {
+			return nil, errCombined
 		}
 		return nil, fmt.Errorf("codex executor: refresh failed")
 	}
@@ -455,6 +467,8 @@ func (e *CodexExecutor) refreshLocked(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	patch := codexauth.NewCredentialRefreshPatchWithDiskBaseline(beforeRefresh.Metadata, diskBaseline, auth.Metadata, outerRefreshed || diskRotatedOuter, siwcRefreshed || diskRotatedSIWC)
+	patch.SetUpstreamRefreshed(outerRefreshed || siwcRefreshed)
+	patch.SetPartitionErrors(outerErr, siwcErr)
 	auth.CodexRefreshPatch = patch
 	if storage, ok := auth.Storage.(*codexauth.CodexTokenStorage); ok && storage != nil {
 		clonedStorage := *storage

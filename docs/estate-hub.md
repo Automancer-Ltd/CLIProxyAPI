@@ -8,6 +8,48 @@ account switchers (cswap for Claude, cxswap for Codex):
 - **Account pins**: a client names the account (or group of accounts) it must use, and is refused
   with a clear error instead of being rotated elsewhere when that account cannot serve it.
 
+## Upstream updates and m6 releases
+
+Merge `router-for-me/CLIProxyAPI`'s `main` into a branch from this fork's `main`, then open the
+pull request against **Automancer-Ltd/CLIProxyAPI**, base `main`. Keep a merge commit when landing
+an upstream sync: squashing drops upstream's ancestry and makes the next sync repeat the same
+history. Upstream's own pull requests still target `dev`.
+
+Resolve conflicts without dropping consume-first routing, pins, holds, the paid-credits guard,
+`/v8/management/credentials/usage`, or `/hub`. Run `go test ./...` with the toolchain in `go.mod`
+on a fleet build host, and compile `./cmd/server`. Authentication changes take the independent
+review route in the lane brief before merge.
+
+When exporting source on Windows, use `git -c core.autocrlf=false archive` so raw JSON fixtures
+keep their committed line endings. Boat shells can inherit `CAP_DAC_READ_SEARCH`, which defeats
+permission-denial fixtures even for a non-root user. Run the tests with that capability dropped:
+`setpriv --inh-caps=-dac_read_search --ambient-caps=-dac_read_search go test ./...`.
+
+Build the deployed artifact from the verified commit, with its revision embedded:
+
+```bash
+revision=$(git rev-parse HEAD)
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build \
+  -ldflags "-X main.Version=estate-${revision:0:8} -X main.Commit=$revision -X main.BuildDate=$(date -u +%FT%TZ)" \
+  -o cliproxyapi-darwin-arm64 ./cmd/server
+```
+
+The m6 service is `gui/$(id -u)/uk.automancer.hub`; its executable is
+`~/.local/hub/cliproxyapi`. Record the current version and checksum, keep that executable as
+`cliproxyapi.prev-<revision>`, and upload the new binary to a separate staging path. Check its
+checksum and ad-hoc code signature before replacing the executable. Restart with
+`launchctl kickstart -k gui/$(id -u)/uk.automancer.hub`. The first spawn after a replacement can
+fail with `OS_REASON_CODESIGNING`; launchd's KeepAlive retry has recovered it within seconds.
+
+Verify the running revision, `/healthz`, `/hub`, and the credential usage response. Compare
+the account inventory before and after, and inspect poll errors. Executor's `hub-readonly.usage`
+reads that inventory without exposing the management key. If direct SSH from a lane device
+refuses its key, use that device's configured fleet transit route; never copy private keys.
+
+Rollback: restore the saved executable over `~/.local/hub/cliproxyapi`, restart the same launch
+agent, and repeat the health and usage checks. The binary update does not require changing the
+hub config or credential files.
+
 ## Config
 
 ```yaml

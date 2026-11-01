@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -1619,5 +1620,37 @@ func TestCodexExecutorCodexClientIgnoresUseSIWC(t *testing.T) {
 				t.Fatal("expected Codex client request to fail when outer non-SIWC access_token is missing")
 			}
 		})
+	}
+}
+
+// A forced refresh that finds only an already-rejected refresh token must report that
+// the credential needs a new sign-in. Returning success with the stale access token
+// made an operator's bulk refresh report a repaired credential that still needed sign-in.
+func TestCodexExecutorForcedRefreshOfRejectedTokenAsksForSignIn(t *testing.T) {
+	executor := NewCodexExecutor(&config.Config{})
+	newAuth := func() *cliproxyauth.Auth {
+		return &cliproxyauth.Auth{
+			ID:       "test-codex-forced-refresh",
+			Provider: "codex",
+			Storage: &codexauth.CodexTokenStorage{
+				AccessToken:  "old-access-token",
+				RefreshToken: "rejected-refresh-token",
+			},
+			Metadata:             map[string]any{"access_token": "old-access-token", "refresh_token": "rejected-refresh-token"},
+			RejectedRefreshToken: "rejected-refresh-token",
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, errSkip := executor.Refresh(ctx, newAuth()); errSkip != nil {
+		t.Fatalf("unforced Refresh error = %v; want the rejected grant skipped quietly", errSkip)
+	}
+
+	refreshed, errRefresh := executor.Refresh(cliproxyauth.WithForceRefresh(ctx), newAuth())
+	var status interface{ StatusCode() int }
+	if errRefresh == nil || !errors.As(errRefresh, &status) || status.StatusCode() != http.StatusUnauthorized || !strings.Contains(errRefresh.Error(), "sign in") {
+		t.Fatalf("forced Refresh = %v, %v; want a 401 asking for a new sign-in", refreshed, errRefresh)
 	}
 }
