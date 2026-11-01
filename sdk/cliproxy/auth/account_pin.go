@@ -137,11 +137,7 @@ func authIncludedSpentUntil(auth *Auth, now time.Time) (time.Time, bool) {
 	if auth == nil || AuthAllowCredits(auth) {
 		return time.Time{}, false
 	}
-	until := includedExhaustedUntil(auth.Quota, now)
-	if ledger := ledgerExhaustedUntil(auth, now); ledger.After(until) {
-		// This copy of the Auth can carry older windows than the latest observation.
-		until = ledger
-	}
+	until := authExhaustedUntil(auth, now)
 	if until.IsZero() || authCreditsAboveFloor(auth, now) {
 		return time.Time{}, false
 	}

@@ -142,11 +142,14 @@ func (l *creditLedger) observeExhaustion(key string, until, observedAt time.Time
 }
 
 // recordQuotaExhaustion stores the credential's current quota snapshot in the ledger.
+// Only a snapshot that carries usage windows is complete; one without (a response that
+// reported only credits) can only move the return later.
 func recordQuotaExhaustion(auth *Auth, now time.Time) {
 	if auth == nil || auth.Quota.ObservedAt.IsZero() {
 		return
 	}
-	credits.observeExhaustion(creditLedgerKey(auth), includedExhaustedUntil(auth.Quota, now), auth.Quota.ObservedAt, true)
+	complete := len(quotaWindowsFromSignals(auth.Quota.Signals, auth.Quota.ObservedAt)) > 0
+	credits.observeExhaustion(creditLedgerKey(auth), includedExhaustedUntil(auth.Quota, now), auth.Quota.ObservedAt, complete)
 }
 
 // ObserveStreamQuota applies quota figures that arrive inside a running stream (Codex
@@ -178,6 +181,20 @@ func ledgerExhaustedUntil(auth *Auth, now time.Time) time.Time {
 	return time.Time{}
 }
 
+// authExhaustedUntil returns when the credential's included allowance returns, by the
+// later of the Auth copy's windows and the ledger's latest observation, or zero when
+// neither says it is used up. Every check of "used up" goes through this.
+func authExhaustedUntil(auth *Auth, now time.Time) time.Time {
+	if auth == nil {
+		return time.Time{}
+	}
+	until := includedExhaustedUntil(auth.Quota, now)
+	if ledger := ledgerExhaustedUntil(auth, now); ledger.After(until) {
+		until = ledger
+	}
+	return until
+}
+
 // ObserveCredits records a usage poll's credit reading for the credential as the poll
 // saw it, so the reading belongs to the provider account that was polled.
 func (m *Manager) ObserveCredits(auth *Auth, reading CreditReading) bool {
@@ -201,7 +218,7 @@ func AuthServesWebsocketTurn(auth *Auth, now time.Time) bool {
 	if auth == nil {
 		return false
 	}
-	return AuthAllowCredits(auth) || (includedExhaustedUntil(auth.Quota, now).IsZero() && ledgerExhaustedUntil(auth, now).IsZero())
+	return AuthAllowCredits(auth) || authExhaustedUntil(auth, now).IsZero()
 }
 
 // observeCreditSpend applies a served Codex response to the credential's reading.
@@ -211,5 +228,5 @@ func observeCreditSpend(auth *Auth, provider string, headers http.Header, now ti
 	}
 	reported, errParse := strconv.ParseFloat(strings.TrimSpace(headers.Get("X-Codex-Credits-Balance")), 64)
 	hasReported := errParse == nil && !math.IsNaN(reported) && !math.IsInf(reported, 0)
-	credits.observeResponse(creditLedgerKey(auth), reported, hasReported, !includedExhaustedUntil(auth.Quota, now).IsZero(), now)
+	credits.observeResponse(creditLedgerKey(auth), reported, hasReported, !authExhaustedUntil(auth, now).IsZero(), now)
 }

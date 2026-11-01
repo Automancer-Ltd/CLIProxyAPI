@@ -121,6 +121,10 @@ func consumeFirstRankOf(auth *Auth, now time.Time) consumeFirstRank {
 			rank.used = window.used
 		}
 	}
+	if !authExhaustedUntil(auth, now).IsZero() {
+		// The ledger can know the account is used up before this copy does.
+		rank.exhausted, rank.spent = true, true
+	}
 	if longest == nil || !longest.resetAt.After(now) {
 		return rank
 	}

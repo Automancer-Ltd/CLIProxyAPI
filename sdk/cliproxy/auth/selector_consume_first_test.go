@@ -630,6 +630,38 @@ func TestUsedUpWindowReachesEveryCopyAndOpenSockets(t *testing.T) {
 		t.Fatal("partial event at 40%: next websocket turn allowed; want still refused")
 	}
 
+	// A response that reports only credits is not a complete snapshot and cannot clear it.
+	creditsOnly := stale.Clone()
+	creditsOnly.Quota = QuotaState{ObservedAt: now.Add(1500 * time.Millisecond), Signals: map[string]string{
+		"X-Codex-Credits-Has-Credits": "True",
+		"X-Codex-Credits-Balance":     "5000",
+	}}
+	recordQuotaExhaustion(creditsOnly, now.Add(1500*time.Millisecond))
+	if AuthServesWebsocketTurn(stale, now.Add(1500*time.Millisecond)) {
+		t.Fatal("credits-only response: next websocket turn allowed; want still refused")
+	}
+
+	// Ranking sees it too: an account with included allowance left goes first.
+	other := &Auth{ID: "ledger-window-other", Provider: "codex", Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+		"X-Codex-Primary-Used-Percent":   "96",
+		"X-Codex-Primary-Window-Minutes": "10080",
+		"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(72*time.Hour).Unix(), 10),
+	}}}
+	if !consumeFirstRankOf(other, now).before(consumeFirstRankOf(stale, now)) {
+		t.Fatal("stale copy at 60% that the ledger knows is used up ranks before an account at 96%")
+	}
+
+	// A response of unknown cost counts as spent on credits even though this copy
+	// still reads 60%.
+	m.ObserveCredits(stale, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now.Add(1600 * time.Millisecond)})
+	if _, spent := authIncludedSpentUntil(stale, now.Add(1600*time.Millisecond)); spent {
+		t.Fatal("poll 5000 above the floor: refused; want served")
+	}
+	observeCreditSpend(stale, "codex", http.Header{}, now.Add(1700*time.Millisecond))
+	if _, spent := authIncludedSpentUntil(stale, now.Add(1700*time.Millisecond)); !spent {
+		t.Fatal("response of unknown cost on a used-up account: served; want refused until a newer poll")
+	}
+
 	// A complete, newer snapshot (a poll after a reset) clears it.
 	reset := stale.Clone()
 	reset.Quota = QuotaState{ObservedAt: now.Add(2 * time.Second), Signals: map[string]string{
