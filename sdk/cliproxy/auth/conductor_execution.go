@@ -2271,8 +2271,10 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 		return auth, &Error{Code: "included_allowance_spent", Message: fmt.Sprintf("credential's included allowance is used up until %s (paid credits refused)", until.UTC().Format(time.RFC3339)), HTTPStatus: http.StatusConflict}
 	}
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	// Resolve the executor as request execution does: some providers (kimi-ai, OpenAI
+	// compatible) register under a key that differs from auth.Provider.
 	m.mu.RLock()
-	executor := m.executors[provider]
+	executor, _ := m.executorLocked(executorKeyFromAuth(auth))
 	m.mu.RUnlock()
 	if executor == nil {
 		return auth, &Error{Code: "executor_not_found", Message: "executor not registered for provider", HTTPStatus: http.StatusBadRequest}

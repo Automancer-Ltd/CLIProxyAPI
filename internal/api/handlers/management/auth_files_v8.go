@@ -329,6 +329,10 @@ func (h *Handler) StartOAuthV8(c *gin.Context) {
 		if provider == "" {
 			provider = h.resolveTargetOAuthProvider(targetAuth)
 		}
+		if !h.oauthTargetSupported(provider) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "targeted re-login is not supported for this provider; sign in without a target credential"})
+			return
+		}
 		targetEmail, targetAccountID := authIdentityEmailAndAccountID(targetAuth)
 		targetPath := ""
 		if targetAuth.Attributes != nil {
@@ -372,6 +376,28 @@ func (h *Handler) StartOAuthV8(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "provider_not_found"})
 		}
 	}
+}
+
+// oauthTargetSupported reports whether the provider's login flow binds a recovery
+// target and replaces that credential. Codex and plugin logins do; the other built-in
+// logins always create a new credential, so a targeted request would report success
+// while the selected credential stays broken.
+func (h *Handler) oauthTargetSupported(provider string) bool {
+	provider = strings.TrimSpace(provider)
+	switch strings.ToLower(provider) {
+	case "codex":
+		return true
+	case "claude", "antigravity", "kimi", "kimi-ai", "xai", "devin", "meta":
+		// StartOAuthV8 routes these to built-in logins that ignore the target.
+		return false
+	}
+	if h == nil || provider == "" {
+		return false
+	}
+	h.mu.Lock()
+	host := h.pluginHost
+	h.mu.Unlock()
+	return host != nil && host.HasAuthProvider(provider)
 }
 
 func (h *Handler) resolveTargetOAuthProvider(targetAuth *coreauth.Auth) string {
