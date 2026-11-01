@@ -44,6 +44,14 @@ checksum and ad-hoc code signature before replacing the executable. Restart with
 `launchctl kickstart -k gui/$(id -u)/uk.automancer.hub`. The first spawn after a replacement can
 fail with `OS_REASON_CODESIGNING`; launchd's KeepAlive retry has recovered it within seconds.
 
+After the m6 swap, cross-compile the same commit with `GOOS=linux GOARCH=amd64 CGO_ENABLED=0`,
+keeping the revision build flags above. Install it on auto-vps as `~/.local/hub-standby/cliproxyapi`
+while `hub-standby.service` is inactive, keeping the old binary as `cliproxyapi.prev-<revision>`.
+Follow [After every m6 hub release: rebuild the standby](https://github.com/Automancer-Ltd/automancer-ops/blob/main/docs/hub-failover.md#after-every-m6-hub-release-rebuild-the-standby)
+for the exact build/install commands, rollback and spare-port proof. Confirm both binaries'
+`--version` lines name the same commit, then check the `hub-failover.service` journal after its
+next hourly build comparison for any mismatch report.
+
 Verify the running revision, `/healthz`, `/hub`, and the credential usage response. Compare
 the account inventory before and after, and inspect poll errors. Executor's `hub-readonly.usage`
 reads that inventory without exposing the management key. If direct SSH from a lane device
