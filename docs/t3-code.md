@@ -21,6 +21,20 @@ started with `t3 thread start . "Reply with the single word pong" --provider <id
 The script is the source of truth. A `providerInstances` write replaces the whole map, so edit the
 script and rerun it rather than changing one instance through the API.
 
+The Claude instance starts with `USE_BUILTIN_RIPGREP=0` and a full PATH with
+`/opt/automancer/bin/agent-shims` first. The generator takes the remaining PATH
+from its launch environment, so run it with the host's normal login PATH and a
+real `rg` behind the shims. T3 passes values literally; `$PATH` in an environment
+entry will not expand. Claude's native Grep chooses its binary before user
+settings and hooks load. Installation and synthetic verification are in
+`Automancer-Ltd/automancer-ops`, `runbooks/claude-search-shims.md` (t12269).
+
+Changing a provider instance can close its previous scope. Before rerunning the
+generator or changing `claude-hub.environment`, check the installed T3 version's
+lifecycle and ensure no Claude sessions can be interrupted. Preserve the live
+settings and avoid overwriting newer instance changes with this generator's
+whole map. A settings write is not proof that a new Claude launch uses the shim.
+
 ## Instances
 
 | Instance id | Name in T3 | Reaches models through | Models |

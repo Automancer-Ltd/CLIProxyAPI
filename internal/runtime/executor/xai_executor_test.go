@@ -3608,8 +3608,8 @@ func TestXAIExecutorExecuteImagesUsesImagesEndpointAndPublishesUsage(t *testing.
 	if record.Failed {
 		t.Fatalf("failed = true, want false; failure=%+v", record.Fail)
 	}
-	if record.Detail != (usage.Detail{}) {
-		t.Fatalf("detail = %+v, want zero token usage", record.Detail)
+	if record.Detail.TotalTokens != 0 || record.Detail.ImageCount == nil || *record.Detail.ImageCount != 1 {
+		t.Fatalf("detail = %+v, want zero token usage and ImageCount=1", record.Detail)
 	}
 	assertXAIUsageRecordTTFT(t, record.TTFT)
 	assertNoAdditionalXAIUsageRecord(t, plugin.records)
@@ -3785,6 +3785,63 @@ func TestXAIExecutorExecuteImagesUsesEditsEndpoint(t *testing.T) {
 
 	if gotPath != "/images/edits" {
 		t.Fatalf("path = %q, want /images/edits", gotPath)
+	}
+}
+
+func TestXAIExecutorExecuteImagesPayloadDefaultUsesOriginalRequest(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var errRead error
+		gotBody, errRead = io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Errorf("read request body: %v", errRead)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":123,"data":[{"url":"https://x.ai/image.png"}]}`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		Payload: config.PayloadConfig{
+			Default: []config.PayloadRule{{
+				Models: []config.PayloadModelRule{{Name: "grok-imagine-*"}},
+				Params: map[string]any{
+					"response_format": "url",
+					"aspect_ratio":    "16:9",
+					"resolution":      "2k",
+				},
+			}},
+		},
+	}
+	exec := NewXAIExecutor(cfg)
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+
+	_, errExec := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-imagine-image",
+		Payload: []byte(`{"model":"grok-imagine-image","prompt":"draw","response_format":"b64_json","aspect_ratio":"1:1","resolution":"1k"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-image"),
+		OriginalRequest: []byte(`{"model":"grok-imagine-image","prompt":"draw"}`),
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestPathMetadataKey: "/v1/images/generations",
+		},
+	})
+	if errExec != nil {
+		t.Fatalf("Execute() error = %v", errExec)
+	}
+
+	if got := gjson.GetBytes(gotBody, "response_format").String(); got != "url" {
+		t.Fatalf("response_format = %q, want url; body=%s", got, gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "aspect_ratio").String(); got != "16:9" {
+		t.Fatalf("aspect_ratio = %q, want 16:9; body=%s", got, gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "resolution").String(); got != "2k" {
+		t.Fatalf("resolution = %q, want 2k; body=%s", got, gotBody)
 	}
 }
 
@@ -3991,8 +4048,8 @@ func TestXAIExecutorExecuteVideosCreate(t *testing.T) {
 	if record.Failed {
 		t.Fatalf("failed = true, want false; failure=%+v", record.Fail)
 	}
-	if record.Detail != (usage.Detail{}) {
-		t.Fatalf("detail = %+v, want zero token usage", record.Detail)
+	if record.Detail.TotalTokens != 0 || record.Detail.ImageDetails != nil || record.Detail.MediaCounts != nil {
+		t.Fatalf("detail = %+v, want zero token usage on async video creation", record.Detail)
 	}
 	assertXAIUsageRecordTTFT(t, record.TTFT)
 	assertNoAdditionalXAIUsageRecord(t, plugin.records)
@@ -7876,5 +7933,54 @@ func TestApplyPatchResponsesExecutorLocalFailures(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestXAIWebsocketUsagePreservesFilteredSearch(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer func() {
+			if errClose := conn.Close(); errClose != nil {
+				t.Errorf("close: %v", errClose)
+			}
+		}()
+		if _, _, err = conn.ReadMessage(); err != nil {
+			t.Errorf("read: %v", err)
+			return
+		}
+		event := `{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"id":"ctc_1","type":"custom_tool_call","call_id":"xs_call-1","name":"x_keyword_search","status":"completed"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`
+		if err = conn.WriteMessage(websocket.TextMessage, []byte(event)); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	defer server.Close()
+	alias := t.Name()
+	capture := &multiProviderUsageCapture{alias: alias, records: make(chan usage.Record, 4)}
+	usage.RegisterNamedPlugin(t.Name(), capture)
+	t.Cleanup(func() { usage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{}) })
+	ctx := usage.WithRequestedModelAlias(cliproxyexecutor.WithDownstreamWebsocket(context.Background()), alias)
+	exec := NewXAIWebsocketsExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Provider: "xai", Attributes: map[string]string{"base_url": server.URL, "websockets": "true"}, Metadata: map[string]any{"access_token": "test"}}
+	result, err := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{Model: "grok-4.5", Payload: []byte(`{"model":"grok-4.5","input":"search","tools":[{"type":"x_search"}]}`)}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, ResponseFormat: sdktranslator.FormatOpenAIResponse, Stream: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatal(chunk.Err)
+		}
+	}
+	select {
+	case record := <-capture.records:
+		if record.Detail.TotalTokens != 2 || record.Detail.ToolUsageDetails == nil || record.Detail.ToolUsageDetails.XSearchCalls == nil || *record.Detail.ToolUsageDetails.XSearchCalls != 1 {
+			t.Fatalf("lost raw upstream usage: %+v tools=%+v", record.Detail, record.Detail.ToolUsageDetails)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("usage not published")
 	}
 }
