@@ -146,10 +146,13 @@ func (h *Handler) refreshUsage(ctx context.Context, now time.Time) {
 		// An account serving traffic already reports its own headers. One that may
 		// spend credits is read every interval anyway: the guard trusts only the
 		// poll's balance, and only while it is recent (credits_floor).
+		// A reading made unknown by traffic is read again on the next tick.
 		_, creditsFloor := coreauth.AuthCreditsFloor(auth)
-		busy := observes && now.Sub(observed) < every && !(kind == "codex" && creditsFloor) &&
+		creditsFloor = creditsFloor && kind == "codex"
+		busy := observes && now.Sub(observed) < every && !creditsFloor &&
 			!(kind == "codex" && now.Sub(record.AttemptedAt) >= usageBankedFloor)
-		due := fetch != nil && usageProviderEnabled(cfg, kind) && now.Sub(record.AttemptedAt) >= every && !busy
+		due := fetch != nil && usageProviderEnabled(cfg, kind) && !busy &&
+			(now.Sub(record.AttemptedAt) >= every || (creditsFloor && auth.Quota.Credits.Unknown))
 		if due {
 			record = h.pollUsage(ctx, auth, fetch, record, now)
 			changed = true

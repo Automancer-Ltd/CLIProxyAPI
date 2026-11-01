@@ -316,7 +316,7 @@ func TestCreditsFloorSpendsGrantedCreditsDownToTheFloor(t *testing.T) {
 		}}}
 
 	m := NewManager(nil, &ConsumeFirstSelector{}, nil)
-	m.RegisterExecutor(&authFallbackExecutor{id: "codex"})
+	m.RegisterExecutor(newCreditHeadersExecutor(now))
 	reg := registry.GetGlobalRegistry()
 	reg.RegisterClient(spent.ID, "codex", []*registry.ModelInfo{{ID: model}})
 	t.Cleanup(func() { reg.UnregisterClient(spent.ID) })
@@ -359,34 +359,40 @@ func TestCreditsFloorSpendsGrantedCreditsDownToTheFloor(t *testing.T) {
 		}
 	}
 
-	// Traffic lowers the reading until the next poll: each response without a
-	// balance reserves CreditReservationPerResponse, and a reported balance that is
-	// lower replaces it.
-	respond := func(headers http.Header) {
+	// Traffic only lowers the reading until a newer poll.
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now})
+	respond := func(balance string) {
+		headers := http.Header{}
+		headers.Set("X-Codex-Primary-Used-Percent", "100")
+		headers.Set("X-Codex-Primary-Window-Minutes", "10080")
+		headers.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10))
+		if balance != "" {
+			headers.Set("X-Codex-Credits-Balance", balance)
+		}
 		ctx := internallogging.WithResponseHeadersHolder(context.Background())
 		internallogging.SetResponseHeaders(ctx, headers)
 		m.MarkResult(ctx, Result{AuthID: spent.ID, Provider: "codex", Model: model, Success: true})
 	}
-	m.ObserveCredits(spent.ID, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now})
-	for i := 0; i < 99; i++ {
-		respond(http.Header{})
-	}
+	respond("1200")
+	respond("1400") // a delayed, higher figure is ignored
 	if !served() {
-		t.Fatal("1500 less 99 reservations: refused; want served")
+		t.Fatal("response reporting 1200: refused; want served")
 	}
-	respond(http.Header{})
+	respond("")
 	if served() {
-		t.Fatal("1500 less 100 reservations reaches the floor: served; want refused")
+		t.Fatal("response on credits without a balance: served; want refused until a newer poll")
 	}
-	m.ObserveCredits(spent.ID, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now.Add(time.Second)})
-	respond(http.Header{
-		"X-Codex-Primary-Used-Percent":   []string{"100"},
-		"X-Codex-Primary-Window-Minutes": []string{"10080"},
-		"X-Codex-Primary-Reset-At":       []string{strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10)},
-		"X-Codex-Credits-Balance":        []string{"950"},
-	})
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 1500, HasCredits: true, ReadAt: time.Now().Add(time.Millisecond)})
+	if !served() {
+		t.Fatal("newer poll 1500: refused; want served")
+	}
+	// A poll read before a later response cannot raise the balance that response reported.
+	pollStarted := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	respond("950")
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 1500, HasCredits: true, ReadAt: pollStarted})
 	if served() {
-		t.Fatal("response reporting 950: served; want refused")
+		t.Fatal("overlapping poll 1500 after a response reporting 950: served; want refused")
 	}
 }
 
@@ -402,9 +408,10 @@ func TestCreditReadingReachesSchedulerStrategies(t *testing.T) {
 			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
 		}}}
 	m := NewManager(nil, &RoundRobinSelector{}, nil)
-	m.RegisterExecutor(&authFallbackExecutor{id: "codex"})
+	m.RegisterExecutor(newCreditHeadersExecutor(now))
 	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(spent.ID, "codex", []*registry.ModelInfo{{ID: model}})
+	const otherModel = "codex-credits-scheduler-other-model"
+	reg.RegisterClient(spent.ID, "codex", []*registry.ModelInfo{{ID: model}, {ID: otherModel}})
 	t.Cleanup(func() { reg.UnregisterClient(spent.ID) })
 	if _, errRegister := m.Register(context.Background(), spent); errRegister != nil {
 		t.Fatalf("register: %v", errRegister)
@@ -421,9 +428,17 @@ func TestCreditReadingReachesSchedulerStrategies(t *testing.T) {
 	if errExec := execute(); errExec != nil {
 		t.Fatalf("reading 1500: Execute = %v; want served", errExec)
 	}
-	m.ObserveCredits(spent.ID, CreditReading{Balance: 900, HasCredits: true, ReadAt: now.Add(time.Second)})
+	// A response on another model lowers the balance for every model.
+	headers := http.Header{}
+	headers.Set("X-Codex-Primary-Used-Percent", "100")
+	headers.Set("X-Codex-Primary-Window-Minutes", "10080")
+	headers.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10))
+	headers.Set("X-Codex-Credits-Balance", "950")
+	ctx := internallogging.WithResponseHeadersHolder(context.Background())
+	internallogging.SetResponseHeaders(ctx, headers)
+	m.MarkResult(ctx, Result{AuthID: spent.ID, Provider: "codex", Model: otherModel, Success: true})
 	if execute() == nil {
-		t.Fatal("reading 900: served; want refused")
+		t.Fatal("balance 950 reported on another model: served; want refused")
 	}
 }
 
@@ -443,4 +458,25 @@ func TestConsumeFirstRanksCreditFundedAccountsLast(t *testing.T) {
 	if !nearlySpent.before(onCredits) || onCredits.before(nearlySpent) {
 		t.Fatalf("rank 96%% (resets in 3d) = %+v should come before 100%% (resets in 1h) = %+v", nearlySpent, onCredits)
 	}
+}
+
+// creditHeadersExecutor answers like a Codex account past its included allowance that
+// reports a large credit balance, so the requests a test makes leave the reading alone.
+type creditHeadersExecutor struct {
+	*authFallbackExecutor
+	headers http.Header
+}
+
+func newCreditHeadersExecutor(now time.Time) *creditHeadersExecutor {
+	headers := http.Header{}
+	headers.Set("X-Codex-Primary-Used-Percent", "100")
+	headers.Set("X-Codex-Primary-Window-Minutes", "10080")
+	headers.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10))
+	headers.Set("X-Codex-Credits-Balance", "1000000")
+	return &creditHeadersExecutor{authFallbackExecutor: &authFallbackExecutor{id: "codex"}, headers: headers}
+}
+
+func (e *creditHeadersExecutor) Execute(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	internallogging.SetResponseHeaders(ctx, e.headers.Clone())
+	return e.authFallbackExecutor.Execute(ctx, auth, req, opts)
 }

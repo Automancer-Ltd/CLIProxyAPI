@@ -220,11 +220,13 @@ The guard starts from the usage poll's reading of `wham/usage` (`credits.balance
 for 30 minutes after the read. An account with a
 floor is polled every `interval` even while it serves traffic, so with the estate's 10 minutes a
 reading is never more than about 11 minutes old; with the refresher off, or an interval over 30
-minutes, the account is always refused. Until the next poll, traffic only lowers the reading: a
-response that reports a lower `x-codex-credits-balance` replaces it, and a response served past the
-included allowance with no balance of its own takes 5 credits off it. A newer poll replaces it.
-Requests still in flight are not counted, so set the floor above what the account's concurrent
-requests can spend (the estate uses 2,000 credits). The listing
+minutes, the account is always refused. Until a newer poll, traffic only lowers the reading: a
+Codex response reports the balance (`x-codex-credits-balance`), and a lower figure replaces it. A
+response served past the included allowance that reports no balance makes the reading unknown, so
+the account is refused until the next tick's poll reads it again. A poll that started before a
+later change by traffic can only lower the reading, never raise it. A reported balance does not
+yet include requests still in flight: set the floor above what the account's
+concurrent requests can spend (the estate uses 2,000 credits). The listing
 shows the floor as `"credits_floor": <number>` and the last reading as `usage.balance`
 (`{"left": ..., "currency": "credits"}`), which `allowances` prints. Remove the floor with
 `"credits_floor": null`; the account is then guarded as before.

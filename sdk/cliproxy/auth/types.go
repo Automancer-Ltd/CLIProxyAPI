@@ -332,12 +332,18 @@ type QuotaState struct {
 	Credits CreditReading `json:"credits,omitzero"`
 }
 
-// CreditReading is one usage-poll reading of an account's credit balance.
+// CreditReading is an account's credit balance: read by the usage poll, then only
+// lowered by traffic until a poll that is newer than the last change.
 type CreditReading struct {
-	Balance    float64   `json:"balance"`
-	HasCredits bool      `json:"has_credits"`
-	Unlimited  bool      `json:"unlimited"`
-	ReadAt     time.Time `json:"read_at,omitzero"`
+	Balance    float64 `json:"balance"`
+	HasCredits bool    `json:"has_credits"`
+	Unlimited  bool    `json:"unlimited"`
+	// ReadAt is when the last poll read it; UpdatedAt the last change by poll or traffic.
+	ReadAt    time.Time `json:"read_at,omitzero"`
+	UpdatedAt time.Time `json:"updated_at,omitzero"`
+	// Unknown: a response was served on credits without reporting a balance, so
+	// what it cost is unknown until a newer poll.
+	Unknown bool `json:"unknown,omitempty"`
 }
 
 // Clone returns an independent copy of the quota state.

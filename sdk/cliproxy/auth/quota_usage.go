@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"math"
 	"net/http"
 	"time"
 )
@@ -65,8 +66,10 @@ func (m *Manager) publishQuotaSnapshot(snapshot *Auth) {
 	}
 }
 
-// ObserveCredits records a usage poll's credit reading. A reading no newer than the
-// stored one is ignored.
+// ObserveCredits records a usage poll's credit reading, read at reading.ReadAt. A poll
+// no newer than the last poll is ignored. One newer than the last change replaces the
+// reading; one that overlaps a later change by traffic can only lower the balance, so
+// an older figure never reopens spending (credits_floor).
 func (m *Manager) ObserveCredits(id string, reading CreditReading) bool {
 	if m == nil || reading.ReadAt.IsZero() {
 		return false
@@ -77,7 +80,17 @@ func (m *Manager) ObserveCredits(id string, reading CreditReading) bool {
 		m.mu.Unlock()
 		return false
 	}
-	auth.Quota.Credits = reading
+	current := auth.Quota.Credits
+	if reading.ReadAt.After(current.UpdatedAt) {
+		reading.UpdatedAt, reading.Unknown = reading.ReadAt, false
+		auth.Quota.Credits = reading
+	} else {
+		current.ReadAt = reading.ReadAt
+		current.Balance = math.Min(current.Balance, reading.Balance)
+		current.HasCredits = current.HasCredits && reading.HasCredits
+		current.Unlimited = current.Unlimited || reading.Unlimited
+		auth.Quota.Credits = current
+	}
 	snapshot := auth.Clone()
 	m.mu.Unlock()
 	m.publishQuotaSnapshot(snapshot)
