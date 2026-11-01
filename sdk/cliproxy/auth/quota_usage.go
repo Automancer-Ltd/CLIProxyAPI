@@ -58,6 +58,18 @@ func (m *Manager) ObserveQuota(id string, headers http.Header, observedAt time.T
 	return true
 }
 
+// newerCreditReading returns whichever reading changed last (by UpdatedAt, then
+// ReadAt), preferring current on a tie. Credential updates (a PATCH, a refresh, a
+// save) start from an earlier copy, so they keep the manager's newer reading instead
+// of restoring the copy's.
+func newerCreditReading(incoming, current CreditReading) CreditReading {
+	if incoming.UpdatedAt.After(current.UpdatedAt) ||
+		(incoming.UpdatedAt.Equal(current.UpdatedAt) && incoming.ReadAt.After(current.ReadAt)) {
+		return incoming
+	}
+	return current
+}
+
 // versionedSnapshotLocked advances the credential's version for a quota change and
 // returns a copy to publish, so the scheduler treats an earlier in-flight snapshot
 // (a delayed MarkResult) as stale instead of letting it overwrite this one.

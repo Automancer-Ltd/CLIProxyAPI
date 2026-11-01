@@ -157,6 +157,7 @@ func (m *Manager) BindCodexSIWC(ctx context.Context, id string, expectedEpoch ui
 		updated.Generation++
 		updated.CredentialVersion = max(current.CredentialVersion, 1) + 1
 		updated.UpdatedAt = now
+		updated.Quota.Credits = newerCreditReading(updated.Quota.Credits, current.Quota.Credits)
 		updated.ClearFileSnapshot()
 		m.auths[id] = updated
 		m.notifyAuthChangeLocked(id)

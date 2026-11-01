@@ -452,6 +452,19 @@ func TestCreditReadingReachesSchedulerStrategies(t *testing.T) {
 	if errExec := execute(); errExec != nil {
 		t.Fatalf("newer reading 1500: Execute = %v; want served", errExec)
 	}
+	// A credential edit that started from an earlier copy keeps the newer reading.
+	edit, _ := m.GetByID(spent.ID)
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 900, HasCredits: true, ReadAt: now.Add(3 * time.Millisecond)})
+	edit.Metadata[MetadataGroup] = "edited"
+	if _, errUpdate := m.Update(context.Background(), edit); errUpdate != nil {
+		t.Fatalf("update: %v", errUpdate)
+	}
+	if got, _ := m.GetByID(spent.ID); got.Quota.Credits.Balance != 900 {
+		t.Fatalf("after an edit from an earlier copy: balance = %v; want 900", got.Quota.Credits.Balance)
+	}
+	if execute() == nil {
+		t.Fatal("edit from an earlier copy restored 1500: served; want refused")
+	}
 	// A response on another model lowers the balance for every model.
 	headers := http.Header{}
 	headers.Set("X-Codex-Primary-Used-Percent", "100")
