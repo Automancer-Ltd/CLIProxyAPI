@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -293,5 +295,442 @@ func TestSpentIncludedAllowanceRefusesPaidCredits(t *testing.T) {
 	}
 	if got, errExec := execute("team"); errExec != nil || got != team.ID {
 		t.Fatalf("Execute(pin=team) with allow_credits = %q, %v; want %q", got, errExec, team.ID)
+	}
+}
+
+// A Pro account's granted credits may be spent past its included window, but only
+// down to credits_floor, and only on a recent poll reading: at or below the floor,
+// with no credits, or with a stale or missing reading, the hub refuses it as before,
+// so it never spends into bought credits (t10647).
+func TestCreditsFloorSpendsGrantedCreditsDownToTheFloor(t *testing.T) {
+	const model = "codex-credits-floor-test-model"
+	now := time.Now()
+	spent := &Auth{ID: "floor-pro", Provider: "codex", Metadata: map[string]any{MetadataGroup: "pro", MetadataCreditsFloor: json.Number("1000")},
+		Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "100",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
+			// Traffic headers are not trusted for the floor.
+			"X-Codex-Credits-Has-Credits": "True",
+			"X-Codex-Credits-Balance":     "50000",
+		}}}
+
+	m := NewManager(nil, &ConsumeFirstSelector{}, nil)
+	m.RegisterExecutor(newCreditHeadersExecutor(now))
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(spent.ID, "codex", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { reg.UnregisterClient(spent.ID) })
+	t.Cleanup(func() { credits.forget(creditLedgerKey(spent)) })
+	if _, errRegister := m.Register(context.Background(), spent); errRegister != nil {
+		t.Fatalf("register: %v", errRegister)
+	}
+	served := func() bool {
+		opts := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.AccountPinMetadataKey: "pro"}}
+		_, errExec := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, opts)
+		var refusal *accountPinError
+		if errExec != nil && (!errors.As(errExec, &refusal) || !strings.Contains(refusal.Error(), "paid credits refused")) {
+			t.Fatalf("Execute = %v; want served or paid credits refused", errExec)
+		}
+		return errExec == nil
+	}
+	if served() {
+		t.Fatal("no poll reading: served; want refused")
+	}
+
+	steps := []struct {
+		name    string
+		reading CreditReading
+		applied bool
+		want    bool
+	}{
+		{"stale reading above the floor", CreditReading{Balance: 1500, HasCredits: true, ReadAt: now.Add(-CreditReadingMaxAge - time.Minute)}, true, false},
+		{"recent reading above the floor", CreditReading{Balance: 1500, HasCredits: true, ReadAt: now.Add(-time.Minute)}, true, true},
+		{"older reading is ignored", CreditReading{Balance: 900, HasCredits: true, ReadAt: now.Add(-2 * time.Minute)}, false, true},
+		{"newer reading below the floor", CreditReading{Balance: 900, HasCredits: true, ReadAt: now.Add(-30 * time.Second)}, true, false},
+		{"at the floor", CreditReading{Balance: 1000, HasCredits: true, ReadAt: now.Add(-20 * time.Second)}, true, false},
+		{"unlimited credits", CreditReading{Balance: 5000, HasCredits: true, Unlimited: true, ReadAt: now.Add(-10 * time.Second)}, true, false},
+		{"no credits", CreditReading{Balance: 5000, ReadAt: now.Add(-5 * time.Second)}, true, false},
+	}
+	for _, step := range steps {
+		if applied := m.ObserveCredits(spent, step.reading); applied != step.applied {
+			t.Fatalf("%s: ObserveCredits applied = %v; want %v", step.name, applied, step.applied)
+		}
+		if got := served(); got != step.want {
+			t.Fatalf("%s: served = %v; want %v", step.name, got, step.want)
+		}
+	}
+
+	// Traffic only lowers the reading until a newer poll (started after those responses).
+	m.ObserveCredits(spent, CreditReading{Balance: 1500, HasCredits: true, ReadAt: time.Now()})
+	respond := func(balance string) {
+		headers := http.Header{}
+		headers.Set("X-Codex-Primary-Used-Percent", "100")
+		headers.Set("X-Codex-Primary-Window-Minutes", "10080")
+		headers.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10))
+		if balance != "" {
+			headers.Set("X-Codex-Credits-Balance", balance)
+		}
+		ctx := internallogging.WithResponseHeadersHolder(context.Background())
+		internallogging.SetResponseHeaders(ctx, headers)
+		m.MarkResult(ctx, Result{AuthID: spent.ID, Provider: "codex", Model: model, Success: true})
+	}
+	respond("1200")
+	respond("1400") // a delayed, higher figure is ignored
+	if !served() {
+		t.Fatal("response reporting 1200: refused; want served")
+	}
+	respond("")
+	if served() {
+		t.Fatal("response on credits without a balance: served; want refused until a newer poll")
+	}
+	m.ObserveCredits(spent, CreditReading{Balance: 1500, HasCredits: true, ReadAt: time.Now().Add(time.Millisecond)})
+	if !served() {
+		t.Fatal("newer poll 1500: refused; want served")
+	}
+	// A poll read before a later response cannot raise the balance that response reported.
+	pollStarted := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	respond("950")
+	m.ObserveCredits(spent, CreditReading{Balance: 1500, HasCredits: true, ReadAt: pollStarted})
+	if served() {
+		t.Fatal("overlapping poll 1500 after a response reporting 950: served; want refused")
+	}
+	// Each response of unknown cost moves the reading on, so a poll that started
+	// between two of them cannot clear it.
+	m.ObserveCredits(spent, CreditReading{Balance: 1500, HasCredits: true, ReadAt: time.Now().Add(time.Millisecond)})
+	time.Sleep(2 * time.Millisecond)
+	respond("")
+	pollStarted = time.Now()
+	time.Sleep(2 * time.Millisecond)
+	respond("")
+	m.ObserveCredits(spent, CreditReading{Balance: 1500, HasCredits: true, ReadAt: pollStarted})
+	if served() {
+		t.Fatal("poll started between two responses of unknown cost: served; want refused")
+	}
+}
+
+// Round-robin and fill-first pick from the scheduler's snapshots, so a poll reading
+// must reach them too (t10647 review).
+func TestCreditReadingReachesSchedulerStrategies(t *testing.T) {
+	const model = "codex-credits-scheduler-test-model"
+	now := time.Now()
+	spent := &Auth{ID: "floor-rr", Provider: "codex", Metadata: map[string]any{MetadataCreditsFloor: 1000.0},
+		Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "100",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
+		}}}
+	m := NewManager(nil, &RoundRobinSelector{}, nil)
+	m.RegisterExecutor(newCreditHeadersExecutor(now))
+	reg := registry.GetGlobalRegistry()
+	const otherModel = "codex-credits-scheduler-other-model"
+	reg.RegisterClient(spent.ID, "codex", []*registry.ModelInfo{{ID: model}, {ID: otherModel}})
+	t.Cleanup(func() { reg.UnregisterClient(spent.ID) })
+	t.Cleanup(func() { credits.forget(creditLedgerKey(spent)) })
+	if _, errRegister := m.Register(context.Background(), spent); errRegister != nil {
+		t.Fatalf("register: %v", errRegister)
+	}
+	m.RefreshSchedulerEntry(spent.ID)
+	execute := func() error {
+		_, errExec := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+		return errExec
+	}
+	if execute() == nil {
+		t.Fatal("no reading: served; want refused")
+	}
+	m.ObserveCredits(spent, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now})
+	if errExec := execute(); errExec != nil {
+		t.Fatalf("reading 1500: Execute = %v; want served", errExec)
+	}
+	// A snapshot taken before a newer poll (a delayed result) must not overwrite it.
+	current, _ := m.GetByID(spent.ID)
+	delayed := current.Clone()
+	m.ObserveCredits(spent, CreditReading{Balance: 900, HasCredits: true, ReadAt: now.Add(time.Millisecond)})
+	m.scheduler.upsertAuthResult(delayed, nil, true)
+	if execute() == nil {
+		t.Fatal("delayed snapshot with 1500 after a poll read 900: served; want refused")
+	}
+	m.ObserveCredits(spent, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now.Add(2 * time.Millisecond)})
+	if errExec := execute(); errExec != nil {
+		t.Fatalf("newer reading 1500: Execute = %v; want served", errExec)
+	}
+	// A credential edit that started from an earlier copy keeps the newer reading.
+	edit, _ := m.GetByID(spent.ID)
+	m.ObserveCredits(spent, CreditReading{Balance: 900, HasCredits: true, ReadAt: now.Add(3 * time.Millisecond)})
+	edit.Metadata[MetadataGroup] = "edited"
+	if _, errUpdate := m.Update(context.Background(), edit); errUpdate != nil {
+		t.Fatalf("update: %v", errUpdate)
+	}
+	if got := CreditReadingOf(spent).Balance; got != 900 {
+		t.Fatalf("after an edit from an earlier copy: balance = %v; want 900", got)
+	}
+	if execute() == nil {
+		t.Fatal("edit from an earlier copy restored 1500: served; want refused")
+	}
+	// A poll that lowers the balance refuses every model, including one that has
+	// already been served from its own scheduler snapshot.
+	executeModel := func(name string) error {
+		_, errExec := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: name}, cliproxyexecutor.Options{})
+		return errExec
+	}
+	m.ObserveCredits(spent, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now.Add(4 * time.Millisecond)})
+	if executeModel(model) != nil || executeModel(otherModel) != nil {
+		t.Fatal("reading 1500: a model was refused; want both served")
+	}
+	m.ObserveCredits(spent, CreditReading{Balance: 900, HasCredits: true, ReadAt: now.Add(5 * time.Millisecond)})
+	if executeModel(model) == nil || executeModel(otherModel) == nil {
+		t.Fatal("poll 900: a model was served; want both refused")
+	}
+	m.ObserveCredits(spent, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now.Add(6 * time.Millisecond)})
+
+	// A response on another model lowers the balance for every model.
+	headers := http.Header{}
+	headers.Set("X-Codex-Primary-Used-Percent", "100")
+	headers.Set("X-Codex-Primary-Window-Minutes", "10080")
+	headers.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10))
+	headers.Set("X-Codex-Credits-Balance", "950")
+	ctx := internallogging.WithResponseHeadersHolder(context.Background())
+	internallogging.SetResponseHeaders(ctx, headers)
+	m.MarkResult(ctx, Result{AuthID: spent.ID, Provider: "codex", Model: otherModel, Success: true})
+	if execute() == nil {
+		t.Fatal("balance 950 reported on another model: served; want refused")
+	}
+}
+
+// An account served only on credits ranks after a spent account that still has
+// included allowance, even when it resets sooner (t10647 review).
+func TestConsumeFirstRanksCreditFundedAccountsLast(t *testing.T) {
+	now := time.Now()
+	codex := func(used string, reset time.Duration) *Auth {
+		return &Auth{Provider: "codex", Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   used,
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(reset).Unix(), 10),
+		}}}
+	}
+	onCredits := consumeFirstRankOf(codex("100", time.Hour), now)
+	nearlySpent := consumeFirstRankOf(codex("96", 72*time.Hour), now)
+	if !nearlySpent.before(onCredits) || onCredits.before(nearlySpent) {
+		t.Fatalf("rank 96%% (resets in 3d) = %+v should come before 100%% (resets in 1h) = %+v", nearlySpent, onCredits)
+	}
+}
+
+// creditHeadersExecutor answers like a Codex account past its included allowance that
+// reports a large credit balance, so the requests a test makes leave the reading alone.
+type creditHeadersExecutor struct {
+	*authFallbackExecutor
+	headers http.Header
+}
+
+func newCreditHeadersExecutor(now time.Time) *creditHeadersExecutor {
+	headers := http.Header{}
+	headers.Set("X-Codex-Primary-Used-Percent", "100")
+	headers.Set("X-Codex-Primary-Window-Minutes", "10080")
+	headers.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10))
+	headers.Set("X-Codex-Credits-Balance", "1000000")
+	return &creditHeadersExecutor{authFallbackExecutor: &authFallbackExecutor{id: "codex"}, headers: headers}
+}
+
+func (e *creditHeadersExecutor) Execute(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	internallogging.SetResponseHeaders(ctx, e.headers.Clone())
+	return e.authFallbackExecutor.Execute(ctx, auth, req, opts)
+}
+
+// A credential file replaced by another account's login starts with no reading, and a
+// poll of the previous account still in flight cannot give it one (t10647 review).
+func TestCreditReadingBelongsToTheProviderAccount(t *testing.T) {
+	now := time.Now()
+	first := &Auth{ID: "ledger-identity", Provider: "codex", Metadata: map[string]any{MetadataCreditsFloor: 1000.0, "account_id": "acct-a"},
+		Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "100",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
+		}}}
+	replaced := first.Clone()
+	replaced.Metadata["account_id"] = "acct-b"
+	t.Cleanup(func() { credits.forget(creditLedgerKey(first)); credits.forget(creditLedgerKey(replaced)) })
+	m := NewManager(nil, nil, nil)
+	m.ObserveCredits(first, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now})
+	if _, spent := authIncludedSpentUntil(first, now); spent {
+		t.Fatal("account a at 5000: refused; want served")
+	}
+	if _, spent := authIncludedSpentUntil(replaced, now); !spent {
+		t.Fatal("replacement account b with no reading of its own: served; want refused")
+	}
+	m.ObserveCredits(first, CreditReading{Balance: 6000, HasCredits: true, ReadAt: now.Add(time.Second)})
+	if _, spent := authIncludedSpentUntil(replaced, now); !spent {
+		t.Fatal("a poll of account a reached account b: served; want refused")
+	}
+}
+
+// Follow-up websocket turns skip selection, so a credential past its included
+// allowance forwards none unless allow_credits is set (t10647 review).
+func TestWebsocketTurnsStopPastTheIncludedAllowance(t *testing.T) {
+	now := time.Now()
+	codex := func(id, used string, meta map[string]any) *Auth {
+		return &Auth{ID: id, Provider: "codex", Metadata: meta, Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   used,
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
+		}}}
+	}
+	m := NewManager(nil, nil, nil)
+	aboveFloor := codex("ws-turn-above-floor", "100", map[string]any{MetadataCreditsFloor: 1000.0, MetadataGroup: "pro"})
+	atFloor := codex("ws-turn-at-floor", "100", map[string]any{MetadataCreditsFloor: 1000.0, MetadataGroup: "pro"})
+	unknownCost := codex("ws-turn-unknown", "100", map[string]any{MetadataCreditsFloor: 1000.0, MetadataGroup: "pro"})
+	t.Cleanup(func() {
+		credits.forget(creditLedgerKey(aboveFloor))
+		credits.forget(creditLedgerKey(atFloor))
+		credits.forget(creditLedgerKey(unknownCost))
+	})
+	m.ObserveCredits(aboveFloor, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now})
+	m.ObserveCredits(atFloor, CreditReading{Balance: 1000, HasCredits: true, ReadAt: now})
+	m.ObserveCredits(unknownCost, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now})
+	observeCreditSpend(unknownCost, "codex", http.Header{}, now)
+	for _, tc := range []struct {
+		name string
+		auth *Auth
+		want bool
+	}{
+		{"included allowance left", codex("ws-turn-included", "60", nil), true},
+		{"on credits above the floor keeps the session", aboveFloor, true},
+		{"on credits at the floor", atFloor, false},
+		{"on credits with an unknown cost", unknownCost, false},
+		{"spent, no override", codex("ws-turn-spent", "100", nil), false},
+		{"allow_credits", codex("ws-turn-allow", "100", map[string]any{MetadataAllowCredits: true}), true},
+	} {
+		if got := AuthServesWebsocketTurn(tc.auth, now); got != tc.want {
+			t.Errorf("%s: AuthServesWebsocketTurn = %v; want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The guard reads the latest quota observation from the ledger as well as the Auth
+// copy it is handed: a scheduler snapshot or an open socket can carry windows from
+// before the account was used up (t10647 review).
+func TestUsedUpWindowReachesEveryCopyAndOpenSockets(t *testing.T) {
+	now := time.Now()
+	window := func(used string) http.Header {
+		headers := http.Header{}
+		headers.Set("X-Codex-Primary-Used-Percent", used)
+		headers.Set("X-Codex-Primary-Window-Minutes", "10080")
+		headers.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10))
+		return headers
+	}
+	stale := &Auth{ID: "ledger-window", Provider: "codex", Metadata: map[string]any{MetadataCreditsFloor: 1000.0},
+		Quota: QuotaState{ObservedAt: now.Add(-time.Minute), Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "60",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
+		}}}
+	t.Cleanup(func() { credits.forget(creditLedgerKey(stale)) })
+	m := NewManager(nil, nil, nil)
+	m.ObserveCredits(stale, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now})
+
+	// A quota event inside a running stream: the window is used up and the balance is
+	// below the floor. The stale copy is refused for selection and for the next turn.
+	inStream := window("100")
+	inStream.Set("X-Codex-Credits-Balance", "900")
+	ObserveStreamQuota(stale, inStream, now)
+	if _, spent := authIncludedSpentUntil(stale, now); !spent {
+		t.Fatal("stale copy after an in-stream event at 100% and 900 credits: served; want refused")
+	}
+	if AuthServesWebsocketTurn(stale, now) {
+		t.Fatal("stale copy after an in-stream event at 100%: next websocket turn allowed; want refused")
+	}
+
+	// A later partial event that omits the used-up window cannot clear it.
+	ObserveStreamQuota(stale, window("40"), now.Add(time.Second))
+	if AuthServesWebsocketTurn(stale, now.Add(time.Second)) {
+		t.Fatal("partial event at 40%: next websocket turn allowed; want still refused")
+	}
+
+	// A response that reports only credits is not a complete snapshot and cannot clear it.
+	creditsOnly := stale.Clone()
+	creditsOnly.Quota = QuotaState{ObservedAt: now.Add(1500 * time.Millisecond), Signals: map[string]string{
+		"X-Codex-Credits-Has-Credits": "True",
+		"X-Codex-Credits-Balance":     "5000",
+	}}
+	recordQuotaExhaustion(creditsOnly, now.Add(1500*time.Millisecond))
+	if AuthServesWebsocketTurn(stale, now.Add(1500*time.Millisecond)) {
+		t.Fatal("credits-only response: next websocket turn allowed; want still refused")
+	}
+
+	// Ranking sees it too: an account with included allowance left goes first.
+	other := &Auth{ID: "ledger-window-other", Provider: "codex", Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+		"X-Codex-Primary-Used-Percent":   "96",
+		"X-Codex-Primary-Window-Minutes": "10080",
+		"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(72*time.Hour).Unix(), 10),
+	}}}
+	if !consumeFirstRankOf(other, now).before(consumeFirstRankOf(stale, now)) {
+		t.Fatal("stale copy at 60% that the ledger knows is used up ranks before an account at 96%")
+	}
+
+	// A response of unknown cost counts as spent on credits even though this copy
+	// still reads 60%.
+	m.ObserveCredits(stale, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now.Add(1600 * time.Millisecond)})
+	if _, spent := authIncludedSpentUntil(stale, now.Add(1600*time.Millisecond)); spent {
+		t.Fatal("poll 5000 above the floor: refused; want served")
+	}
+	observeCreditSpend(stale, "codex", http.Header{}, now.Add(1700*time.Millisecond))
+	if _, spent := authIncludedSpentUntil(stale, now.Add(1700*time.Millisecond)); !spent {
+		t.Fatal("response of unknown cost on a used-up account: served; want refused until a newer poll")
+	}
+
+	// A complete, newer snapshot (a poll after a reset) clears it.
+	reset := stale.Clone()
+	reset.Quota = QuotaState{ObservedAt: now.Add(2 * time.Second), Signals: map[string]string{
+		"X-Codex-Primary-Used-Percent":   "0",
+		"X-Codex-Primary-Window-Minutes": "10080",
+		"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(7*24*time.Hour).Unix(), 10),
+	}}
+	recordQuotaSnapshot(reset, now.Add(2*time.Second))
+	if !AuthServesWebsocketTurn(stale, now.Add(2*time.Second)) {
+		t.Fatal("after a complete snapshot shows the window reset: next websocket turn refused; want allowed")
+	}
+}
+
+// A duplex response that completes without reporting a balance must make the reading
+// unknown at completion, not at socket teardown: another connection must not select
+// the account on the unchanged balance (t10647 review).
+func TestObserveStreamResponseMarksAnUnreportedBalanceUnknown(t *testing.T) {
+	now := time.Now()
+	exhausted := &Auth{ID: "stream-response-unknown", Provider: "codex",
+		Metadata: map[string]any{MetadataCreditsFloor: 1000.0},
+		Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "100",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(time.Hour).Unix(), 10),
+		}}}
+	remaining := &Auth{ID: "stream-response-included", Provider: "codex",
+		Metadata: map[string]any{MetadataCreditsFloor: 1000.0},
+		Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "60",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
+		}}}
+	t.Cleanup(func() {
+		credits.forget(creditLedgerKey(exhausted))
+		credits.forget(creditLedgerKey(remaining))
+	})
+	m := NewManager(nil, nil, nil)
+	m.ObserveCredits(exhausted, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now})
+	m.ObserveCredits(remaining, CreditReading{Balance: 5000, HasCredits: true, ReadAt: now})
+	if _, spent := authIncludedSpentUntil(exhausted, now); spent {
+		t.Fatal("balance above the floor: refused; want served")
+	}
+
+	ObserveStreamResponse(exhausted, now)
+	if reading := CreditReadingOf(exhausted); !reading.Unknown {
+		t.Fatal("a completed response without a balance: reading still known; want unknown")
+	}
+	if _, spent := authIncludedSpentUntil(exhausted, now); !spent {
+		t.Fatal("a completed response without a balance: served; want refused until a newer poll")
+	}
+
+	// An account with included allowance left was not served on credits.
+	ObserveStreamResponse(remaining, now)
+	if reading := CreditReadingOf(remaining); reading.Unknown {
+		t.Fatal("a response with included allowance left: reading unknown; want known")
 	}
 }

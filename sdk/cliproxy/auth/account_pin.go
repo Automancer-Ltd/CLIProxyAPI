@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -28,6 +29,11 @@ const (
 	// used up. The provider then bills the overage (Codex credits, Claude extra usage),
 	// so it is off unless set on the account.
 	MetadataAllowCredits = "allow_credits"
+	// MetadataCreditsFloor lets a Codex account keep serving past its included window
+	// while its credit balance stays above this number of credits. It is for a granted,
+	// expiring credit pool (the ChatGPT Pro grants, t10647): the floor caps how much of
+	// the balance the hub may spend, and an unknown balance is refused.
+	MetadataCreditsFloor = "credits_floor"
 )
 
 // AuthPinOnly reports whether the credential serves pinned requests only.
@@ -38,6 +44,73 @@ func AuthPinOnly(auth *Auth) bool {
 // AuthAllowCredits reports whether the credential may serve past its included allowance.
 func AuthAllowCredits(auth *Auth) bool {
 	return authMetadataFlag(auth, MetadataAllowCredits)
+}
+
+// AuthCreditsFloor returns the account's credits floor when one is set.
+func AuthCreditsFloor(auth *Auth) (float64, bool) {
+	if auth == nil {
+		return 0, false
+	}
+	var floor float64
+	switch value := auth.Metadata[MetadataCreditsFloor].(type) {
+	case float64:
+		floor = value
+	case int:
+		floor = float64(value)
+	case int64:
+		floor = float64(value)
+	case json.Number:
+		parsed, errParse := value.Float64()
+		if errParse != nil {
+			return 0, false
+		}
+		floor = parsed
+	case string:
+		parsed, errParse := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if errParse != nil {
+			return 0, false
+		}
+		floor = parsed
+	default:
+		return 0, false
+	}
+	if math.IsNaN(floor) || math.IsInf(floor, 0) || floor < 0 {
+		return 0, false
+	}
+	return floor, true
+}
+
+// CreditReadingMaxAge is how long a credit reading may authorise spending. The usage
+// poll reads an account with a credits floor every interval (10 minutes on the estate
+// hub); an older reading, or none, is unknown and the guard refuses the account.
+const CreditReadingMaxAge = 30 * time.Minute
+
+// AuthCreditBalance returns the account's known credit balance while its poll reading is
+// recent (credit_ledger.go). It reports nothing when the account has no credits or
+// unlimited credits, which are billed.
+func AuthCreditBalance(auth *Auth, now time.Time) (float64, bool) {
+	if auth == nil {
+		return 0, false
+	}
+	reading := CreditReadingOf(auth)
+	if reading.ReadAt.IsZero() || reading.Unknown || now.Sub(reading.ReadAt) > CreditReadingMaxAge ||
+		!reading.HasCredits || reading.Unlimited || math.IsNaN(reading.Balance) || math.IsInf(reading.Balance, 0) {
+		return 0, false
+	}
+	return reading.Balance, true
+}
+
+// authCreditsAboveFloor reports whether the account may spend its credit balance:
+// a floor is set and a recent, known balance is above it. Traffic lowers the reading
+// (Manager.observeCreditSpend); a reported balance does not yet include requests in
+// flight, so the floor must cover what concurrent requests spend.
+func authCreditsAboveFloor(auth *Auth, now time.Time) bool {
+	floor, okFloor := AuthCreditsFloor(auth)
+	if !okFloor {
+		return false
+	}
+	balance, okBalance := AuthCreditBalance(auth, now)
+	return okBalance && balance > floor
 }
 
 func authMetadataFlag(auth *Auth, key string) bool {
@@ -57,18 +130,30 @@ func authMetadataFlag(auth *Auth, key string) bool {
 // any observed window is fully used and not yet reset. Past that point a Codex account
 // with credits, or a Claude account with extra usage, still answers and bills the
 // request, so the hub routes nothing to it (no paid fallback, t9765) unless
-// allow_credits is set. The usage refresher keeps polling it, so an early reset lifts this.
+// allow_credits is set, or credits_floor is set and the credit balance is above it
+// (a granted credit pool, t10647). The usage refresher keeps polling it, so an early
+// reset lifts this.
 func authIncludedSpentUntil(auth *Auth, now time.Time) (time.Time, bool) {
 	if auth == nil || AuthAllowCredits(auth) {
 		return time.Time{}, false
 	}
+	until := authExhaustedUntil(auth, now)
+	if until.IsZero() || authCreditsAboveFloor(auth, now) {
+		return time.Time{}, false
+	}
+	return until, true
+}
+
+// includedExhaustedUntil returns the latest reset among the observed windows that are
+// fully used and not yet reset, or zero when none is.
+func includedExhaustedUntil(quota QuotaState, now time.Time) time.Time {
 	var until time.Time
-	for _, window := range quotaWindowsFromSignals(auth.Quota.Signals, auth.Quota.ObservedAt) {
+	for _, window := range quotaWindowsFromSignals(quota.Signals, quota.ObservedAt) {
 		if window.used >= 100 && window.resetAt.After(now) && window.resetAt.After(until) {
 			until = window.resetAt
 		}
 	}
-	return until, !until.IsZero()
+	return until
 }
 
 func accountPinFromMetadata(meta map[string]any) string {

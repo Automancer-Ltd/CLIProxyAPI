@@ -88,7 +88,9 @@ disabled, not held, matching any pin), it picks the first by:
 
 1. **Not spent before spent.** An account is spent when any observed window (5-hour or weekly) is
    at 95% or more. Spent accounts are still used as a last resort until a window reaches 100%;
-   then the paid-credits guard (below) removes them.
+   then the paid-credits guard (below) removes them, unless the account may spend credits
+   (`allow_credits` or `credits_floor`). An account at 100% ranks after every spent account that
+   still has included allowance, so credits are spent last.
 2. **Known reset before unknown.** The rank uses the account's longest window: weekly for Claude
    (`7d`), and for Codex whichever of primary/secondary has the longer `window-minutes`.
 3. **Soonest weekly reset first.** That allowance is the one about to be lost.
@@ -254,6 +256,58 @@ curl -X PATCH "$HUB/v8/management/credentials/fields" \
 Remove it again with `"allow_credits": null`. The credential listing shows `"allow_credits": true`
 while it is set. Rolling back the whole guard means deploying the previous binary.
 
+### Spending a granted credit pool (`credits_floor`)
+
+Some credits are already paid for and expire: each ChatGPT Pro account carries a one-off grant of
+Codex credits that lapses on 31 Dec 2026 (inventory on t10646). To spend those rather than lose
+them (t10647), set a floor on the account:
+
+```bash
+curl -X PATCH "$HUB/v8/management/credentials/fields" \
+  -H "Authorization: Bearer $MANAGEMENT_KEY" -H "Content-Type: application/json" \
+  -d '{"name": "<auth file name>", "credits_floor": 2000}'
+```
+
+While the account's included window reads 100%, the hub keeps routing to it as long as its credit
+balance is above the floor, so Codex bills the grant. At or below the floor, with `has_credits`
+false, with unlimited credits, or with no recent balance, the guard refuses it exactly as above.
+The floor is the cap: the hub spends at most the balance above it. It ranks after every account
+that still has included allowance, spent or not, so consume-first uses every included window first
+and the credits last.
+
+The guard starts from the usage poll's reading of `wham/usage` (`credits.balance`) and trusts it
+for 30 minutes after the read. The hub keeps one reading per account, outside the copies of the
+account that routing and updates work on, so every routing path sees the same figure. It belongs
+to the ChatGPT account behind the credential, so a file replaced by another account's login starts
+with no reading. It is held in memory only: after a restart the account is refused until its next
+poll.
+
+A Codex websocket sends follow-up turns without a new selection, so the hub checks the same
+paid-credits guard at every turn: an account past its included allowance forwards no follow-up turn
+unless `allow_credits` is set or its balance is above its floor. A credit-funded account keeps its
+session; the floor is checked again on each turn, and the turn's spend is applied when its response
+completes or fails, with a stream canceled after it generated output accounted before it returns. A
+response that reported no balance makes the reading unknown, so no other connection can spend
+against the old figure. Quota events inside a running stream (a window reaching
+100%, a lower balance) take effect for the next turn at once; the hub also keeps the latest used-up
+window per account beside the balance, so no older copy of the account hides it, and consume-first
+ranks that account after every account with included allowance left. Only a newer snapshot that
+carries the quota windows can clear a used-up window: a response that reports only the balance
+cannot. This also stops an open websocket from spending paid credits
+under the guard above. An account with a
+floor is polled every `interval` even while it serves traffic, so with the estate's 10 minutes a
+reading is never more than about 11 minutes old; with the refresher off, or an interval over 30
+minutes, the account is always refused. Until a newer poll, traffic only lowers the reading: a
+Codex response reports the balance (`x-codex-credits-balance`), and a lower figure replaces it. A
+response served past the included allowance that reports no balance makes the reading unknown, so
+the account is refused until the next tick's poll reads it again. A poll that started before a
+later change by traffic can only lower the reading, never raise it. A reported balance does not
+yet include requests still in flight: set the floor above what the account's
+concurrent requests can spend (the estate uses 2,000 credits). The listing
+shows the floor as `"credits_floor": <number>` and the last reading as `usage.balance`
+(`{"left": ..., "currency": "credits"}`), which `allowances` prints. Remove the floor with
+`"credits_floor": null`; the account is then guarded as before.
+
 **The hub cannot cap credit spend exactly.** It has no single point where every request's cost is
 counted: a failed or cancelled stream, a turn on an open Codex websocket, and the many copies of an
 account's state (scheduler snapshots, in-flight updates) each see a different figure. An attempt to
@@ -373,8 +427,10 @@ config-file API keys (`source: "config"`), each with `cooldowns` and `usage`.
 - `usage`: `windows` (each `used_percent`, `window_minutes`, `reset_at`, and a `label` for
   extra windows), `plan`, `fetched_at` and the last poll `error`. Claude and Codex main windows
   come from the live quota headers; the rest from the last refresher poll. `balance` (`left`,
-  `total` when known, `currency`) for DeepSeek and CommandCode; `banked_resets` (each `expires_at`)
-  for Codex
+  `total` when known, `currency`) for DeepSeek and CommandCode, and for a Codex account with
+  credits (`currency: "credits"`); `banked_resets` (each `expires_at`) for Codex
+- `allow_credits` and `credits_floor` when set (paid-credits guard)
 
-Sort by `spent`, then entries with `reset_at` before those without, then `reset_at`, then
+Sort by `used_percent` of 100 or more (served only on credits) last, then by `spent`, then entries
+with `reset_at` before those without, then `reset_at`, then
 `used_percent`, then `id` to reproduce the router's order within a priority tier.

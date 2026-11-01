@@ -143,10 +143,16 @@ func (h *Handler) refreshUsage(ctx context.Context, now time.Time) {
 		if record.ObservedAt.After(observed) {
 			observed = record.ObservedAt
 		}
-		// An account serving traffic already reports its own headers.
-		busy := observes && now.Sub(observed) < every &&
+		// An account serving traffic already reports its own headers. One that may
+		// spend credits is read every interval anyway: the guard trusts only the
+		// poll's balance, and only while it is recent (credits_floor).
+		// A reading made unknown by traffic is read again on the next tick.
+		_, creditsFloor := coreauth.AuthCreditsFloor(auth)
+		creditsFloor = creditsFloor && kind == "codex"
+		busy := observes && now.Sub(observed) < every && !creditsFloor &&
 			!(kind == "codex" && now.Sub(record.AttemptedAt) >= usageBankedFloor)
-		due := fetch != nil && usageProviderEnabled(cfg, kind) && now.Sub(record.AttemptedAt) >= every && !busy
+		due := fetch != nil && usageProviderEnabled(cfg, kind) && !busy &&
+			(now.Sub(record.AttemptedAt) >= every || (creditsFloor && coreauth.CreditReadingOf(auth).Unknown))
 		if due {
 			record = h.pollUsage(ctx, auth, fetch, record, now)
 			changed = true
@@ -195,6 +201,11 @@ func (h *Handler) pollUsage(ctx context.Context, auth *coreauth.Auth, fetch usag
 	}
 	if len(result.headers) > 0 {
 		h.authManager.ObserveQuota(auth.ID, result.headers, now)
+	}
+	if result.credits != nil {
+		reading := *result.credits
+		reading.ReadAt = now
+		h.authManager.ObserveCredits(auth, reading)
 	}
 	record.Plan, record.Windows, record.Balance, record.FetchedAt, record.Error = result.plan, result.windows, result.balance, now, ""
 	if result.bankedRead {

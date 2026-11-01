@@ -85,10 +85,15 @@ func TestUsageParsersReadProviderShapes(t *testing.T) {
 	quota := coreauth.QuotaState{}
 	codex := parseCodexUsage(gjson.Parse(`{"plan_type":"pro","rate_limit":{
 		"primary_window":{"used_percent":12,"limit_window_seconds":18000,"reset_at":4102444800},
-		"secondary_window":{"used_percent":30,"limit_window_seconds":604800,"reset_at":4102531200}}}`))
+		"secondary_window":{"used_percent":30,"limit_window_seconds":604800,"reset_at":4102531200}},
+		"credits":{"has_credits":true,"unlimited":false,"balance":"61147.3537315000"}}`))
 	quota.ObserveResponseHeadersForProvider("codex", codex.headers, time.Now())
 	if got := coreauth.QuotaUsageWindows(quota); codex.plan != "pro" || len(got) != 2 || got[0].UsedPercent != 12 || got[1].WindowMinutes != 10080 {
 		t.Fatalf("codex = %q %+v", codex.plan, got)
+	}
+	if codex.credits == nil || !codex.credits.HasCredits || codex.credits.Unlimited || codex.credits.Balance != 61147.3537315 ||
+		codex.balance == nil || *codex.balance != (usageBalance{Left: 61147.3537315, Currency: "credits"}) {
+		t.Fatalf("codex credits = %+v, balance = %+v", codex.credits, codex.balance)
 	}
 
 	devin := coreauth.QuotaUsageWindows(coreauth.QuotaState{Signals: map[string]string{
