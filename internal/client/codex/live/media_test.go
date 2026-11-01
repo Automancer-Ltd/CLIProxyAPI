@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -34,6 +35,8 @@ func TestPionMediaRelaySelectsRemoteProxyMode(t *testing.T) {
 	if errRelay != nil {
 		t.Fatalf("create media relay: %v", errRelay)
 	}
+
+	restrictTestRelayToLoopback(t, relay)
 
 	for name, testCase := range map[string]struct {
 		proxyURL string
@@ -195,6 +198,7 @@ func TestPionMediaRelayBridgesAudioAndDataChannel(t *testing.T) {
 	if errRelay != nil {
 		t.Fatalf("create media relay: %v", errRelay)
 	}
+	restrictTestRelayToLoopback(t, relay)
 	session, relayOffer, errSession := relay.NewSession(context.Background(), clientOffer, mediaSessionRoute{
 		credential: "Voice credential",
 		authIndex:  "auth-index",
@@ -212,6 +216,7 @@ func TestPionMediaRelayBridgesAudioAndDataChannel(t *testing.T) {
 	if errRelay != nil {
 		t.Fatalf("reload media relay: %v", errRelay)
 	}
+	restrictTestRelayToLoopback(t, reloadedRelay)
 	if _, _, errCapacity := reloadedRelay.NewSession(context.Background(), clientOffer, mediaSessionRoute{}); errCapacity == nil {
 		t.Fatal("reloaded media relay bypassed the shared session capacity")
 	}
@@ -370,7 +375,25 @@ func newTestWebRTCAPI(t *testing.T) *webrtc.API {
 	return webrtc.NewAPI(
 		webrtc.WithMediaEngine(mediaEngine),
 		webrtc.WithInterceptorRegistry(interceptorRegistry),
+		webrtc.WithSettingEngine(testLoopbackSettings()),
 	)
+}
+
+// Test peers use loopback ICE candidates and never open an mDNS socket on the LAN.
+func testLoopbackSettings() webrtc.SettingEngine {
+	settings := webrtc.SettingEngine{}
+	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeTCP4})
+	settings.SetIncludeLoopbackCandidate(true)
+	settings.SetIPFilter(func(ip net.IP) bool { return ip != nil && ip.IsLoopback() })
+	settings.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
+	return settings
+}
+
+func restrictTestRelayToLoopback(t *testing.T, relay *pionMediaRelay) {
+	t.Helper()
+	relay.downstreamAPI = newTestWebRTCAPI(t)
+	relay.upstreamAPI = newTestWebRTCAPI(t)
+	relay.proxyUpstreamAPI = newTestWebRTCAPI(t)
 }
 
 func completeOffer(t *testing.T, connection *webrtc.PeerConnection) string {

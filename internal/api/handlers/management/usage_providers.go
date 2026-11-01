@@ -195,6 +195,19 @@ var usageFetchers = map[string]usageFetcher{
 	},
 }
 
+// usageHTTPError is a non-2xx reply from a usage endpoint.
+type usageHTTPError struct{ status int }
+
+func (e usageHTTPError) Error() string {
+	return fmt.Sprintf("usage endpoint returned HTTP %d", e.status)
+}
+
+// usageUnauthorized reports whether a usage endpoint refused the token with 401.
+func usageUnauthorized(err error) bool {
+	var httpErr usageHTTPError
+	return errors.As(err, &httpErr) && httpErr.status == http.StatusUnauthorized
+}
+
 // usageRequest sends one usage request and returns the JSON body of a 2xx reply.
 func usageRequest(ctx context.Context, client *http.Client, method, url string, payload []byte, headers map[string]string) (gjson.Result, error) {
 	var body io.Reader
@@ -224,7 +237,7 @@ func usageRequest(ctx context.Context, client *http.Client, method, url string, 
 		return gjson.Result{}, fmt.Errorf("read usage response: %w", errRead)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return gjson.Result{}, fmt.Errorf("usage endpoint returned HTTP %d", resp.StatusCode)
+		return gjson.Result{}, usageHTTPError{status: resp.StatusCode}
 	}
 	if !gjson.ValidBytes(data) {
 		return gjson.Result{}, errors.New("usage endpoint returned invalid JSON")

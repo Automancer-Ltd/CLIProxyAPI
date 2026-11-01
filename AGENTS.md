@@ -5,13 +5,15 @@ Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with 
 ## Repository
 - GitHub: https://github.com/router-for-me/CLIProxyAPI
 - This checkout is the Automancer-Ltd fork. `gh` resolves to the upstream parent by default, so pass `--repo Automancer-Ltd/CLIProxyAPI` (or run `gh repo set-default Automancer-Ltd/CLIProxyAPI`) before `gh pr create`; a T3 docs PR landed upstream as router-for-me/CLIProxyAPI#7089 on 28 Oct 2026 and had to be closed.
+- The fork's pull request CI is `.github/workflows/estate-ci.yml` (build, then vet and test the changed Go packages). The workflows inherited from upstream are disabled on the fork in its Actions settings, because they retarget pull requests to upstream's `dev`, publish upstream's releases and enforce upstream's contributor rules (t10411, 1 Nov 2026).
 
 ## Commands
 ```bash
 gofmt -w . # Format (required after Go changes)
 go build -o cli-proxy-api ./cmd/server # Build
 go run ./cmd/server # Run dev server
-go test ./... # Run all tests
+go test ./... # Run ordinary tests (local fixtures only)
+go test -tags integration ./internal/discovery # Live LAN multicast checks; use a dedicated test host
 go test -v -run TestName ./path/to/pkg # Run single test
 go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRED after changes)
 ```

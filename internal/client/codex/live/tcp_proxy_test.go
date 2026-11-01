@@ -18,7 +18,6 @@ import (
 	"github.com/pion/sdp/v3"
 	"github.com/pion/stun/v3"
 	"github.com/pion/webrtc/v4"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 type recordedProxyDial struct {
@@ -430,10 +429,7 @@ func assertNoForwardingStart(t *testing.T, started <-chan struct{}) {
 }
 
 func TestPionActiveTCPCandidatePassesTunnelAuthentication(t *testing.T) {
-	localAPI, errAPI := newPionProxyAPI(config.CodexLiveMediaRelayConfig{})
-	if errAPI != nil {
-		t.Fatalf("create local Pion API: %v", errAPI)
-	}
+	localAPI := newTestWebRTCAPI(t)
 	localPeer, errPeer := localAPI.NewPeerConnection(webrtc.Configuration{})
 	if errPeer != nil {
 		t.Fatalf("create local PeerConnection: %v", errPeer)
@@ -460,10 +456,8 @@ func TestPionActiveTCPCandidatePassesTunnelAuthentication(t *testing.T) {
 	if errListen != nil {
 		t.Fatalf("listen for remote ICE-TCP: %v", errListen)
 	}
-	remoteSettings := webrtc.SettingEngine{}
+	remoteSettings := testLoopbackSettings()
 	remoteSettings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeTCP4})
-	remoteSettings.SetIncludeLoopbackCandidate(true)
-	remoteSettings.SetIPFilter(func(ip net.IP) bool { return ip != nil && ip.IsLoopback() })
 	tcpMux := webrtc.NewICETCPMux(nil, tcpListener, 8)
 	remoteSettings.SetICETCPMux(tcpMux)
 	defer func() { _ = tcpMux.Close() }()

@@ -128,6 +128,10 @@ routing:
   `opencode.ai/zen/go` (`opencode-go`). The name given to the entry does not matter. Any other API
   key, including Claude, Codex and Gemini keys, is not polled.
 - A failed poll is retried after `interval`, not sooner. The dashboard shows the error.
+- A Claude or Codex login whose usage read is refused with HTTP 401 is refreshed once and read again:
+  a provider can refuse an access token before it expires, and an idle login is otherwise not
+  refreshed until it nears expiry. If the refresh itself is refused (`invalid_grant` or 401), the
+  login is marked `unauthorized`, as a refused refresh on a request would mark it (t10411).
 - Claude and Codex readings are stored as the same quota headers their responses carry, so
   consume-first ranks idle accounts on them. A poll never replaces newer headers from traffic.
 - The last reading of every account is written to `<auth-dir>/usage-snapshot.cache` (not `.json`,
