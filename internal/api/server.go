@@ -226,6 +226,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	usageCtx, stopUsageRefresh := context.WithCancel(context.Background())
 	s.stopUsageRefresh = stopUsageRefresh
 	s.mgmt.StartUsageRefresher(usageCtx)
+	s.mgmt.StartLaneUsage(usageCtx)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
@@ -425,6 +426,9 @@ func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
 	if s.stopUsageRefresh != nil {
 		s.stopUsageRefresh()
+	}
+	if s.mgmt != nil {
+		s.mgmt.FlushLaneUsage()
 	}
 
 	if s.keepAliveEnabled {

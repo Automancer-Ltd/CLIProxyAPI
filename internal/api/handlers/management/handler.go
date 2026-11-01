@@ -65,6 +65,7 @@ type Handler struct {
 	siwcCommitMu            sync.Mutex
 	usage                   usageStore
 	pluginLoginSaveMu       sync.Mutex
+	lanes                   laneLedger
 }
 
 type configReloadSnapshot struct {
