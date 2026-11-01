@@ -58,6 +58,15 @@ func (m *Manager) ObserveQuota(id string, headers http.Header, observedAt time.T
 	return true
 }
 
+// versionedSnapshotLocked advances the credential's version for a quota change and
+// returns a copy to publish, so the scheduler treats an earlier in-flight snapshot
+// (a delayed MarkResult) as stale instead of letting it overwrite this one.
+func versionedSnapshotLocked(auth *Auth) *Auth {
+	auth.Generation++
+	auth.UpdatedAt = time.Now()
+	return auth.Clone()
+}
+
 // publishQuotaSnapshot hands a quota change to the scheduler, whose strategies pick
 // from their own snapshots, so the paid-credits guard sees the same figures there.
 func (m *Manager) publishQuotaSnapshot(snapshot *Auth) {
@@ -91,7 +100,7 @@ func (m *Manager) ObserveCredits(id string, reading CreditReading) bool {
 		current.Unlimited = current.Unlimited || reading.Unlimited
 		auth.Quota.Credits = current
 	}
-	snapshot := auth.Clone()
+	snapshot := versionedSnapshotLocked(auth)
 	m.mu.Unlock()
 	m.publishQuotaSnapshot(snapshot)
 	return true

@@ -173,9 +173,11 @@ func (q *QuotaState) trackCreditSpend(provider string, headers http.Header, now 
 		q.Credits.Balance, q.Credits.UpdatedAt = reported, now
 		return true
 	}
-	if includedExhaustedUntil(*q, now).IsZero() || q.Credits.Unknown {
+	if includedExhaustedUntil(*q, now).IsZero() {
 		return false
 	}
+	// Advance UpdatedAt on every such response, so only a poll that started after the
+	// last one can clear Unknown.
 	q.Credits.Unknown, q.Credits.UpdatedAt = true, now
 	return true
 }

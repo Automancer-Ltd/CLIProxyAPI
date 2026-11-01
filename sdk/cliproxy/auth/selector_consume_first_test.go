@@ -394,6 +394,18 @@ func TestCreditsFloorSpendsGrantedCreditsDownToTheFloor(t *testing.T) {
 	if served() {
 		t.Fatal("overlapping poll 1500 after a response reporting 950: served; want refused")
 	}
+	// Each response of unknown cost moves the reading on, so a poll that started
+	// between two of them cannot clear it.
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 1500, HasCredits: true, ReadAt: time.Now().Add(time.Millisecond)})
+	time.Sleep(2 * time.Millisecond)
+	respond("")
+	pollStarted = time.Now()
+	time.Sleep(2 * time.Millisecond)
+	respond("")
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 1500, HasCredits: true, ReadAt: pollStarted})
+	if served() {
+		t.Fatal("poll started between two responses of unknown cost: served; want refused")
+	}
 }
 
 // Round-robin and fill-first pick from the scheduler's snapshots, so a poll reading
@@ -427,6 +439,18 @@ func TestCreditReadingReachesSchedulerStrategies(t *testing.T) {
 	m.ObserveCredits(spent.ID, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now})
 	if errExec := execute(); errExec != nil {
 		t.Fatalf("reading 1500: Execute = %v; want served", errExec)
+	}
+	// A snapshot taken before a newer poll (a delayed result) must not overwrite it.
+	current, _ := m.GetByID(spent.ID)
+	delayed := current.Clone()
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 900, HasCredits: true, ReadAt: now.Add(time.Millisecond)})
+	m.scheduler.upsertAuthResult(delayed, nil, true)
+	if execute() == nil {
+		t.Fatal("delayed snapshot with 1500 after a poll read 900: served; want refused")
+	}
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now.Add(2 * time.Millisecond)})
+	if errExec := execute(); errExec != nil {
+		t.Fatalf("newer reading 1500: Execute = %v; want served", errExec)
 	}
 	// A response on another model lowers the balance for every model.
 	headers := http.Header{}
