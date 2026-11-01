@@ -684,6 +684,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					current, pending = pending[0], pending[1:]
 				}
 				responseID = gjson.GetBytes(payload, "response.id").String()
+				creditTracker.start(responseID)
 				// Retain response settings, not request history or authorization headers.
 				// In-flight steering pins its parent's settings independently of this window.
 				snapshot := *current
@@ -868,6 +869,14 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					}
 				}
 				metadataMu.Unlock()
+				if (eventType == "response.failed" || eventType == "error") && creditTracker.startedResponse(endedID) {
+					// A started response that fails is still billed: account it now, while
+					// the socket can serve another paid turn (t10647 review).
+					if creditTracker.complete() {
+						cliproxyauth.ObserveStreamResponse(auth, time.Now())
+					}
+					creditTracker.forget(endedID)
+				}
 			}
 			if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
 				terminalBusinessRejection = false
@@ -882,6 +891,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				if creditTracker.complete() {
 					cliproxyauth.ObserveStreamResponse(auth, time.Now())
 				}
+				creditTracker.forget(responseID)
 				payload = normalizeCodexWebsocketCompletion(payload)
 				if !current.preserveNativeOutput {
 					payload = patchCodexCompletedOutput(payload, outputItems, outputFallback)
@@ -926,6 +936,35 @@ func isCodexTerminalEventType(eventType string) bool {
 type streamCreditTracker struct {
 	balanceSeq  int64
 	reportedSeq int64
+	started     map[string]struct{}
+}
+
+// start remembers a response that began, so a failure that ends it can be accounted.
+func (t *streamCreditTracker) start(responseID string) {
+	if t == nil || responseID == "" {
+		return
+	}
+	if t.started == nil {
+		t.started = make(map[string]struct{})
+	}
+	t.started[responseID] = struct{}{}
+}
+
+// startedResponse reports whether the response began on this socket.
+func (t *streamCreditTracker) startedResponse(responseID string) bool {
+	if t == nil || responseID == "" {
+		return false
+	}
+	_, ok := t.started[responseID]
+	return ok
+}
+
+// forget drops a response that has been accounted.
+func (t *streamCreditTracker) forget(responseID string) {
+	if t == nil || responseID == "" {
+		return
+	}
+	delete(t.started, responseID)
 }
 
 // observeQuota counts a quota event that carried a credit balance.

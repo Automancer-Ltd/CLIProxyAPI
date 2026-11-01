@@ -278,8 +278,9 @@ A Codex websocket sends follow-up turns without a new selection, so the hub chec
 paid-credits guard at every turn: an account past its included allowance forwards no follow-up turn
 unless `allow_credits` is set or its balance is above its floor. A credit-funded account keeps its
 session; the floor is checked again on each turn, and the turn's spend is applied when its response
-completes (a completed response that reported no balance makes the reading unknown), so no other
-connection can spend against the old figure. Quota events inside a running stream (a window reaching
+completes or fails, with a stream canceled after it generated output accounted before it returns. A
+response that reported no balance makes the reading unknown, so no other connection can spend
+against the old figure. Quota events inside a running stream (a window reaching
 100%, a lower balance) take effect for the next turn at once; the hub also keeps the latest used-up
 window per account beside the balance, so no older copy of the account hides it, and consume-first
 ranks that account after every account with included allowance left. Only a newer snapshot that

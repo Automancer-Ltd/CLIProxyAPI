@@ -601,6 +601,14 @@ func TestStreamCreditTrackerMarksResponsesWithoutABalance(t *testing.T) {
 	if tracker.complete() {
 		t.Fatal("a balance reported since the previous completion: want no unknown")
 	}
+	tracker.start("r5")
+	if !tracker.startedResponse("r5") {
+		t.Fatal("started response not remembered")
+	}
+	tracker.forget("r5")
+	if tracker.startedResponse("r5") {
+		t.Fatal("forgotten response still remembered")
+	}
 }
 
 // A duplex response that reports no credit balance is accounted when it completes, not
@@ -676,6 +684,103 @@ func TestCodexDuplexAccountsACreditSpendBeforeSocketClose(t *testing.T) {
 	// The socket is still open here: completion alone must have marked the reading.
 	if reading := cliproxyauth.CreditReadingOf(auth); !reading.Unknown {
 		t.Fatal("completed response without a balance: reading still known while the socket is open")
+	}
+	cancel()
+	select {
+	case <-serverDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream did not close")
+	}
+	for range result.Chunks {
+	}
+}
+
+// A started response that ends in response.failed is accounted while the socket is
+// still open, so a following paid turn cannot spend against the old balance (t10647
+// review).
+func TestCodexDuplexAccountsAFailedResponseBeforeSocketClose(t *testing.T) {
+	now := time.Now()
+	serverDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(serverDone)
+		conn, errUpgrade := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			t.Errorf("upgrade websocket: %v", errUpgrade)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		read := func() {
+			if _, _, errRead := conn.ReadMessage(); errRead != nil {
+				t.Errorf("read create: %v", errRead)
+			}
+		}
+		write := func(payload string) {
+			if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(payload)); errWrite != nil {
+				t.Errorf("write event: %v", errWrite)
+			}
+		}
+		read()
+		write(`{"type":"response.created","response":{"id":"r1","output":[]}}`)
+		write(`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":100}},"credits":{"has_credits":true,"unlimited":false,"balance":"4000"}}`)
+		write(`{"type":"response.completed","response":{"id":"r1","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+		read()
+		write(`{"type":"response.created","response":{"id":"r2","output":[]}}`)
+		write(`{"type":"response.failed","response":{"id":"r2","status":"failed","error":{"code":"server_error","message":"boom"}}}`)
+		// Keep the socket open until the client closes it.
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	auth := &cliproxyauth.Auth{ID: "duplex-failed-credit", Provider: "codex",
+		Metadata: map[string]any{cliproxyauth.MetadataCreditsFloor: 1000.0},
+		Quota: cliproxyauth.QuotaState{ObservedAt: now, Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "100",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(time.Hour).Unix(), 10),
+		}},
+		Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL, "websockets": "true"}}
+	m := cliproxyauth.NewManager(nil, nil, nil)
+	m.ObserveCredits(auth, cliproxyauth.CreditReading{Balance: 5000, HasCredits: true, ReadAt: now})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	input := make(chan core.WebsocketInput, 1)
+	ctx = core.WithWebsocketInput(core.WithDownstreamWebsocket(ctx), input)
+	exec := NewCodexWebsocketsExecutor(&config.Config{Codex: config.CodexConfig{ResponseSteering: true}})
+	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+	req := core.Request{Model: "gpt-6-astra", Payload: []byte(`{"model":"gpt-6-astra","input":[]}`)}
+	opts := core.Options{SourceFormat: sdktranslator.FromString("codex"), Metadata: map[string]any{core.ExecutionSessionMetadataKey: "duplex-failed-credit"}}
+	result, errStream := exec.ExecuteStream(ctx, auth, req, opts)
+	if errStream != nil {
+		t.Fatal(errStream)
+	}
+	sawFailed := false
+	for !sawFailed {
+		select {
+		case chunk, ok := <-result.Chunks:
+			if !ok {
+				t.Fatal("stream ended before response.failed")
+			}
+			if chunk.Err != nil {
+				t.Fatal(chunk.Err)
+			}
+			switch gjson.GetBytes(chunk.Payload, "type").String() {
+			case "response.completed":
+				input <- core.WebsocketInput{Payload: []byte(`{"type":"response.create","input":[]}`)}
+			case "response.failed":
+				if gjson.GetBytes(chunk.Payload, "response.id").String() != "r2" {
+					continue
+				}
+				sawFailed = true
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	// The socket is still open here: the failed response alone must have accounted.
+	if reading := cliproxyauth.CreditReadingOf(auth); !reading.Unknown {
+		t.Fatal("failed response without a balance: reading still known while the socket is open")
 	}
 	cancel()
 	select {
