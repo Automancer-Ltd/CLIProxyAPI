@@ -2,9 +2,11 @@ package management
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,5 +231,93 @@ func TestUsageParsersReadAPIKeyProviders(t *testing.T) {
 		if tc.result.plan != tc.plan || fmt.Sprint(tc.result.windows) != fmt.Sprint(tc.want) {
 			t.Errorf("%s = %q %+v, want %q %+v", tc.name, tc.result.plan, tc.result.windows, tc.plan, tc.want)
 		}
+	}
+}
+
+// usageRefreshExecutor refreshes a login to "fresh", or fails with refreshErr.
+type usageRefreshExecutor struct {
+	refreshRecordExecutor
+	refreshErr error
+}
+
+func (e *usageRefreshExecutor) Refresh(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	e.refreshCnt.Add(1)
+	if e.refreshErr != nil {
+		return nil, e.refreshErr
+	}
+	auth.Metadata["access_token"] = "fresh"
+	auth.Metadata["expired"] = time.Now().Add(time.Hour).Format(time.RFC3339)
+	return auth, nil
+}
+
+// A usage endpoint can refuse an access token before it expires, and nothing
+// else refreshes an idle login, so a 401 refreshes once and reads again. A
+// refresh that is itself refused marks the login dead, which the estate's
+// dead-login check pages on (t10411).
+func TestUsageRefreshRefreshesTokenOnUnauthorized(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	for _, tc := range []struct {
+		name       string
+		refreshErr error
+		wantTokens []string
+	}{
+		{name: "refresh then retry", wantTokens: []string{"stale", "fresh"}},
+		{name: "refresh refused", refreshErr: errors.New(`token refresh failed with status 400: {"error":"invalid_grant"}`), wantTokens: []string{"stale"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tokens []string
+			original := usageFetchers["codex"]
+			t.Cleanup(func() { usageFetchers["codex"] = original })
+			usageFetchers["codex"] = func(_ context.Context, _ *http.Client, _ *coreauth.Auth, token string) (usageResult, error) {
+				tokens = append(tokens, token)
+				if token != "fresh" {
+					return usageResult{}, usageHTTPError{status: http.StatusUnauthorized}
+				}
+				return usageResult{plan: "pro"}, nil
+			}
+			cfg := &config.Config{AuthDir: t.TempDir()}
+			cfg.Routing.UsageRefresh.Interval = "10m"
+			manager := coreauth.NewManager(nil, nil, nil)
+			executor := &usageRefreshExecutor{refreshRecordExecutor: refreshRecordExecutor{provider: "codex"}, refreshErr: tc.refreshErr}
+			manager.RegisterExecutor(executor)
+			if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+				ID: "codex-a.json", Provider: "codex", Status: coreauth.StatusActive,
+				Metadata: map[string]any{"access_token": "stale", "refresh_token": "refresh",
+					"expired": time.Now().Add(24 * time.Hour).Format(time.RFC3339)},
+			}); errRegister != nil {
+				t.Fatalf("register: %v", errRegister)
+			}
+			h := NewHandlerWithoutConfigFilePath(cfg, manager)
+			now := time.Now()
+
+			h.refreshUsage(context.Background(), now)
+			if fmt.Sprint(tokens) != fmt.Sprint(tc.wantTokens) {
+				t.Fatalf("usage reads used tokens %v, want %v", tokens, tc.wantTokens)
+			}
+			if got := executor.refreshCnt.Load(); got != 1 {
+				t.Fatalf("refreshes = %d, want 1", got)
+			}
+			auth, _ := manager.GetByID("codex-a.json")
+			record := h.usage.get("codex-a.json")
+			_, status, message, _ := reconcileAuthFileCooldownState(auth, now)
+			if tc.refreshErr == nil {
+				if record.Error != "" || record.Plan != "pro" || status != coreauth.StatusActive {
+					t.Fatalf("after refresh: error %q, plan %q, status %q; want a good read and an active login", record.Error, record.Plan, status)
+				}
+				return
+			}
+			if record.Error == "" || !strings.Contains(record.Error, "HTTP 401") {
+				t.Fatalf("usage error = %q, want the 401 and the failed refresh", record.Error)
+			}
+			// estate-hub-dead-login.sh reports status error with a message starting "unauthorized".
+			if status != coreauth.StatusError || !strings.HasPrefix(message, "unauthorized") {
+				t.Fatalf("login = (%q, %q), want a dead login (error, unauthorized...)", status, message)
+			}
+			// A dead login is not refreshed again on the next poll.
+			h.refreshUsage(context.Background(), now.Add(11*time.Minute))
+			if got := executor.refreshCnt.Load(); got != 1 {
+				t.Fatalf("refreshes after the next poll = %d, want still 1", got)
+			}
+		})
 	}
 }
