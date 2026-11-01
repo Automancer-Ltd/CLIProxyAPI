@@ -1,3 +1,10 @@
+> **Estate note (not part of Theo's guide).** Below is a verbatim copy of Theo's public guide, taken
+> on 2026-10-26 (commit 033f95d9) as the method for `docs/estate-hub-plan.md`. Its commands set up the
+> reader's own home hub; they are not on auto-vps, and the estate never had the systemd user unit the
+> guide names. The estate's hub runs on m6 under launchd as `uk.automancer.hub`, with its binary and
+> config in `~/.local/hub/` and its log in `~/Library/Logs/hub.log`. `docs/estate-hub.md` says how to
+> release and roll back the hub; `docs/estate-hub-plan.md` records its history.
+
 # How I manage 7 Claude and 3 Codex accounts across 12+ computers
 
 This is the setup from my token maxing video: [watch it here](https://www.youtube.com/watch?v=D8PikZ1KhUo).
