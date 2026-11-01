@@ -300,6 +300,14 @@ shows the floor as `"credits_floor": <number>` and the last reading as `usage.ba
 (`{"left": ..., "currency": "credits"}`), which `allowances` prints. Remove the floor with
 `"credits_floor": null`; the account is then guarded as before.
 
+**The hub cannot cap credit spend exactly.** It has no single point where every request's cost is
+counted: a failed or cancelled stream, a turn on an open Codex websocket, and the many copies of an
+account's state (scheduler snapshots, in-flight updates) each see a different figure. An attempt to
+spend a granted credit pool down to a hub-side floor (`credits_floor`, Automancer-Ltd/CLIProxyAPI#37,
+t10647) went through twelve independent review rounds, each finding another path that spent past
+it. Put the hard cap at the provider (a prepaid balance with auto-reload off, or a credit grant that
+cannot top itself up) and use the hub only to choose when to spend.
+
 ## Account pins
 
 A client pins a request with one header:
