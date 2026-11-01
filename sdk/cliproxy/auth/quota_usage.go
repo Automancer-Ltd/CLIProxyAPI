@@ -2,7 +2,6 @@ package auth
 
 import (
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -48,15 +47,24 @@ func (m *Manager) ObserveQuota(id string, headers http.Header, observedAt time.T
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	auth, ok := m.auths[id]
-	if !ok || auth == nil {
-		return false
-	}
-	if !observedAt.After(auth.Quota.ObservedAt) {
-		// An older Codex reading can still carry a newer credit balance (credits_floor).
-		if strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
-			return auth.Quota.ObserveCodexCredits(headers, observedAt)
-		}
+	if !ok || auth == nil || !observedAt.After(auth.Quota.ObservedAt) {
 		return false
 	}
 	return auth.Quota.ObserveResponseHeadersForProvider(auth.Provider, headers, observedAt)
+}
+
+// ObserveCredits records a usage poll's credit reading. A reading no newer than the
+// stored one is ignored.
+func (m *Manager) ObserveCredits(id string, reading CreditReading) bool {
+	if m == nil || reading.ReadAt.IsZero() {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	auth, ok := m.auths[id]
+	if !ok || auth == nil || !reading.ReadAt.After(auth.Quota.Credits.ReadAt) {
+		return false
+	}
+	auth.Quota.Credits = reading
+	return true
 }

@@ -38,6 +38,8 @@ type usageResult struct {
 	windows []coreauth.UsageWindow
 	headers http.Header
 	balance *usageBalance
+	// credits is a Codex credit reading for the paid-credits guard (credits_floor).
+	credits *coreauth.CreditReading
 	// banked is read only when bankedRead is set, so a failed read keeps the
 	// last known list.
 	banked     []usageCredit
@@ -318,17 +320,14 @@ func parseCodexUsage(body gjson.Result) usageResult {
 			result.headers.Set(window.prefix+"reset-after-seconds", formatUsageFloat(after.Float()))
 		}
 	}
-	// The credit balance (a Pro account's granted credits) as the headers Codex
-	// responses carry, so the paid-credits guard can read it (credits_floor, t10647).
+	// The credit balance (a Pro account's granted credits): the paid-credits guard
+	// spends down to credits_floor on this reading only (t10647).
 	if credits := body.Get("credits"); credits.IsObject() {
-		for _, field := range []struct{ key, header string }{
-			{"has_credits", "x-codex-credits-has-credits"},
-			{"unlimited", "x-codex-credits-unlimited"},
-			{"balance", "x-codex-credits-balance"},
-		} {
-			if value := credits.Get(field.key); value.Exists() && value.Type != gjson.Null {
-				result.headers.Set(field.header, value.String())
-			}
+		reading := coreauth.CreditReading{HasCredits: credits.Get("has_credits").Bool(),
+			Unlimited: credits.Get("unlimited").Bool(), Balance: credits.Get("balance").Float()}
+		result.credits = &reading
+		if reading.HasCredits && !reading.Unlimited {
+			result.balance = &usageBalance{Left: reading.Balance, Currency: "credits"}
 		}
 	}
 	for _, extra := range body.Get("additional_rate_limits").Array() {

@@ -298,19 +298,20 @@ func TestSpentIncludedAllowanceRefusesPaidCredits(t *testing.T) {
 }
 
 // A Pro account's granted credits may be spent past its included window, but only
-// down to credits_floor: at or below the floor, or with no balance known, the hub
-// refuses it as before, so it never spends into bought credits (t10647).
+// down to credits_floor, and only on a recent poll reading: at or below the floor,
+// with no credits, or with a stale or missing reading, the hub refuses it as before,
+// so it never spends into bought credits (t10647).
 func TestCreditsFloorSpendsGrantedCreditsDownToTheFloor(t *testing.T) {
 	const model = "codex-credits-floor-test-model"
 	now := time.Now()
 	spent := &Auth{ID: "floor-pro", Provider: "codex", Metadata: map[string]any{MetadataGroup: "pro", MetadataCreditsFloor: json.Number("1000")},
-		Quota: QuotaState{ObservedAt: now.Add(-time.Minute), Signals: map[string]string{
+		Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
 			"X-Codex-Primary-Used-Percent":   "100",
 			"X-Codex-Primary-Window-Minutes": "10080",
 			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
-			"X-Codex-Credits-Has-Credits":    "True",
-			"X-Codex-Credits-Unlimited":      "False",
-			"X-Codex-Credits-Balance":        "1500.5",
+			// Traffic headers are not trusted for the floor.
+			"X-Codex-Credits-Has-Credits": "True",
+			"X-Codex-Credits-Balance":     "50000",
 		}}}
 
 	m := NewManager(nil, &ConsumeFirstSelector{}, nil)
@@ -321,53 +322,39 @@ func TestCreditsFloorSpendsGrantedCreditsDownToTheFloor(t *testing.T) {
 	if _, errRegister := m.Register(context.Background(), spent); errRegister != nil {
 		t.Fatalf("register: %v", errRegister)
 	}
-	execute := func() error {
+	served := func() bool {
 		opts := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.AccountPinMetadataKey: "pro"}}
 		_, errExec := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, opts)
-		return errExec
-	}
-	if errExec := execute(); errExec != nil {
-		t.Fatalf("balance above the floor: Execute = %v; want served", errExec)
-	}
-
-	// A later response without credit headers keeps the last balance.
-	observe := func(at time.Time, headers http.Header) {
-		headers.Set("X-Codex-Primary-Used-Percent", "100")
-		headers.Set("X-Codex-Primary-Window-Minutes", "10080")
-		headers.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10))
-		if !m.ObserveQuota(spent.ID, headers, at) {
-			t.Fatalf("ObserveQuota at %s not applied", at)
-		}
-	}
-	observe(now, http.Header{})
-	if errExec := execute(); errExec != nil {
-		t.Fatalf("response without credit headers: Execute = %v; want served on the kept balance", errExec)
-	}
-
-	// A poll that started before that response still lands its balance: 900 is below
-	// the floor, so the account is refused.
-	poll := http.Header{}
-	poll.Set("X-Codex-Credits-Has-Credits", "True")
-	poll.Set("X-Codex-Credits-Balance", "900")
-	if !m.ObserveQuota(spent.ID, poll, now.Add(-time.Second)) {
-		t.Fatal("ObserveQuota did not apply the overlapping poll's credit balance")
-	}
-	var belowFloor *accountPinError
-	if errExec := execute(); !errors.As(errExec, &belowFloor) || !strings.Contains(belowFloor.Error(), "paid credits refused") {
-		t.Fatalf("overlapping poll balance 900: Execute = %v; want paid credits refused", errExec)
-	}
-
-	for i, tc := range []struct{ hasCredits, balance string }{
-		{"True", "1000"},  // at the floor
-		{"False", "5000"}, // no credits
-	} {
-		headers := http.Header{}
-		headers.Set("X-Codex-Credits-Has-Credits", tc.hasCredits)
-		headers.Set("X-Codex-Credits-Balance", tc.balance)
-		observe(now.Add(time.Duration(i+1)*time.Second), headers)
 		var refusal *accountPinError
-		if errExec := execute(); !errors.As(errExec, &refusal) || !strings.Contains(refusal.Error(), "paid credits refused") {
-			t.Fatalf("has_credits=%s balance=%s: Execute = %v; want paid credits refused", tc.hasCredits, tc.balance, errExec)
+		if errExec != nil && (!errors.As(errExec, &refusal) || !strings.Contains(refusal.Error(), "paid credits refused")) {
+			t.Fatalf("Execute = %v; want served or paid credits refused", errExec)
+		}
+		return errExec == nil
+	}
+	if served() {
+		t.Fatal("no poll reading: served; want refused")
+	}
+
+	steps := []struct {
+		name    string
+		reading CreditReading
+		applied bool
+		want    bool
+	}{
+		{"stale reading above the floor", CreditReading{Balance: 1500, HasCredits: true, ReadAt: now.Add(-CreditReadingMaxAge - time.Minute)}, true, false},
+		{"recent reading above the floor", CreditReading{Balance: 1500, HasCredits: true, ReadAt: now.Add(-time.Minute)}, true, true},
+		{"older reading is ignored", CreditReading{Balance: 900, HasCredits: true, ReadAt: now.Add(-2 * time.Minute)}, false, true},
+		{"newer reading below the floor", CreditReading{Balance: 900, HasCredits: true, ReadAt: now.Add(-30 * time.Second)}, true, false},
+		{"at the floor", CreditReading{Balance: 1000, HasCredits: true, ReadAt: now.Add(-20 * time.Second)}, true, false},
+		{"unlimited credits", CreditReading{Balance: 5000, HasCredits: true, Unlimited: true, ReadAt: now.Add(-10 * time.Second)}, true, false},
+		{"no credits", CreditReading{Balance: 5000, ReadAt: now.Add(-5 * time.Second)}, true, false},
+	}
+	for _, step := range steps {
+		if applied := m.ObserveCredits(spent.ID, step.reading); applied != step.applied {
+			t.Fatalf("%s: ObserveCredits applied = %v; want %v", step.name, applied, step.applied)
+		}
+		if got := served(); got != step.want {
+			t.Fatalf("%s: served = %v; want %v", step.name, got, step.want)
 		}
 	}
 }

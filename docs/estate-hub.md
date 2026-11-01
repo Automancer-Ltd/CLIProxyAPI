@@ -206,22 +206,23 @@ them (t10647), set a floor on the account:
 ```bash
 curl -X PATCH "$HUB/v8/management/credentials/fields" \
   -H "Authorization: Bearer $MANAGEMENT_KEY" -H "Content-Type: application/json" \
-  -d '{"name": "<auth file name>", "credits_floor": 1000}'
+  -d '{"name": "<auth file name>", "credits_floor": 2000}'
 ```
 
 While the account's included window reads 100%, the hub keeps routing to it as long as its credit
 balance is above the floor, so Codex bills the grant. At or below the floor, with `has_credits`
-false, with unlimited credits, or with no balance known, the guard refuses it exactly as above. The
-floor is the cap: the hub spends at most the balance above it, and the margin covers the balance
-read lagging behind traffic, so the account never reaches credits that would have to be bought.
-It ranks after every account that still has included allowance, spent or not, so consume-first
-uses every included window first and the credits last.
+false, with unlimited credits, or with no recent balance, the guard refuses it exactly as above.
+The floor is the cap: the hub spends at most the balance above it. It ranks after every account
+that still has included allowance, spent or not, so consume-first uses every included window first
+and the credits last.
 
-The balance is the `x-codex-credits-*` figures Codex returns on its responses, and the usage poll
-reads the same figures from `wham/usage` (every `interval` while the account is spent, at least
-hourly while it serves). A response without those headers keeps the last balance, with the time
-it was read; a poll that started before such a response still replaces it when it is newer. The listing
-shows the floor as `"credits_floor": <number>` and the balance as `usage.balance`
+The guard trusts only the usage poll's reading of `wham/usage` (`credits.balance`), never the
+`x-codex-credits-*` headers on traffic, and only for 30 minutes after the read. An account with a
+floor is polled every `interval` even while it serves traffic, so with the estate's 10 minutes a
+reading is never more than about 11 minutes old; with the refresher off, or an interval over 30
+minutes, the account is always refused. Spending between two readings is not reserved, so set the
+floor above what the account can spend in 30 minutes (the estate uses 2,000 credits). The listing
+shows the floor as `"credits_floor": <number>` and the last reading as `usage.balance`
 (`{"left": ..., "currency": "credits"}`), which `allowances` prints. Remove the floor with
 `"credits_floor": null`; the account is then guarded as before.
 

@@ -80,33 +80,35 @@ func AuthCreditsFloor(auth *Auth) (float64, bool) {
 	return floor, true
 }
 
-// AuthCreditBalance returns the credit balance the account last reported (the Codex
-// x-codex-credits-* headers, from traffic or the usage poll). It reports nothing
-// when the account has no credits or unlimited credits, which are billed.
-func AuthCreditBalance(auth *Auth) (float64, bool) {
+// CreditReadingMaxAge is how long a credit reading may authorise spending. The usage
+// poll reads an account with a credits floor every interval (10 minutes on the estate
+// hub); an older reading, or none, is unknown and the guard refuses the account.
+const CreditReadingMaxAge = 30 * time.Minute
+
+// AuthCreditBalance returns the credit balance the usage poll last read, while that
+// reading is recent. It reports nothing when the account has no credits or unlimited
+// credits, which are billed.
+func AuthCreditBalance(auth *Auth, now time.Time) (float64, bool) {
 	if auth == nil {
 		return 0, false
 	}
-	signals := auth.Quota.Signals
-	if !strings.EqualFold(strings.TrimSpace(signals["X-Codex-Credits-Has-Credits"]), "true") ||
-		strings.EqualFold(strings.TrimSpace(signals["X-Codex-Credits-Unlimited"]), "true") {
+	reading := auth.Quota.Credits
+	if reading.ReadAt.IsZero() || now.Sub(reading.ReadAt) > CreditReadingMaxAge ||
+		!reading.HasCredits || reading.Unlimited || math.IsNaN(reading.Balance) || math.IsInf(reading.Balance, 0) {
 		return 0, false
 	}
-	balance, errParse := strconv.ParseFloat(strings.TrimSpace(signals["X-Codex-Credits-Balance"]), 64)
-	if errParse != nil || math.IsNaN(balance) || math.IsInf(balance, 0) {
-		return 0, false
-	}
-	return balance, true
+	return reading.Balance, true
 }
 
 // authCreditsAboveFloor reports whether the account may spend its credit balance:
-// a floor is set and the last reported balance is above it.
-func authCreditsAboveFloor(auth *Auth) bool {
+// a floor is set and a recent balance is above it. Spending between readings is not
+// reserved, so the floor must cover what the account can spend in CreditReadingMaxAge.
+func authCreditsAboveFloor(auth *Auth, now time.Time) bool {
 	floor, okFloor := AuthCreditsFloor(auth)
 	if !okFloor {
 		return false
 	}
-	balance, okBalance := AuthCreditBalance(auth)
+	balance, okBalance := AuthCreditBalance(auth, now)
 	return okBalance && balance > floor
 }
 
@@ -140,7 +142,7 @@ func authIncludedSpentUntil(auth *Auth, now time.Time) (time.Time, bool) {
 			until = window.resetAt
 		}
 	}
-	if until.IsZero() || authCreditsAboveFloor(auth) {
+	if until.IsZero() || authCreditsAboveFloor(auth, now) {
 		return time.Time{}, false
 	}
 	return until, true

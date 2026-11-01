@@ -91,8 +91,9 @@ func TestUsageParsersReadProviderShapes(t *testing.T) {
 	if got := coreauth.QuotaUsageWindows(quota); codex.plan != "pro" || len(got) != 2 || got[0].UsedPercent != 12 || got[1].WindowMinutes != 10080 {
 		t.Fatalf("codex = %q %+v", codex.plan, got)
 	}
-	if balance, ok := coreauth.AuthCreditBalance(&coreauth.Auth{Quota: quota}); !ok || balance != 61147.3537315 {
-		t.Fatalf("codex credit balance = %v %v; want 61147.3537315", balance, ok)
+	if codex.credits == nil || !codex.credits.HasCredits || codex.credits.Unlimited || codex.credits.Balance != 61147.3537315 ||
+		codex.balance == nil || *codex.balance != (usageBalance{Left: 61147.3537315, Currency: "credits"}) {
+		t.Fatalf("codex credits = %+v, balance = %+v", codex.credits, codex.balance)
 	}
 
 	devin := coreauth.QuotaUsageWindows(coreauth.QuotaState{Signals: map[string]string{
