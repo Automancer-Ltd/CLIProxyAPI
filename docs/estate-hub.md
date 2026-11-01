@@ -20,6 +20,11 @@ Resolve conflicts without dropping consume-first routing, pins, holds, the paid-
 on a fleet build host, and compile `./cmd/server`. Authentication changes take the independent
 review route in the lane brief before merge.
 
+When exporting source on Windows, use `git -c core.autocrlf=false archive` so raw JSON fixtures
+keep their committed line endings. Boat shells can inherit `CAP_DAC_READ_SEARCH`, which defeats
+permission-denial fixtures even for a non-root user. Run the tests with that capability dropped:
+`setpriv --inh-caps=-dac_read_search --ambient-caps=-dac_read_search go test ./...`.
+
 Build the deployed artifact from the verified commit, with its revision embedded:
 
 ```bash
