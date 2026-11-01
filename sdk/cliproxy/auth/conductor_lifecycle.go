@@ -139,6 +139,10 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	// Persist failures stay non-fatal, but must not be silent: a restart would
 	// lose the credential that only exists in memory.
 	if errPersist := m.persistLocked(ctx, auth); errPersist != nil {
+		if _, shared := m.store.(HubAuthority); shared {
+			m.mu.Unlock()
+			return nil, errPersist
+		}
 		log.WithFields(log.Fields{"auth_id": auth.ID, "credential": auth.ID, "provider": auth.Provider}).Warnf("failed to persist registered auth %s (%s): %v", auth.Provider, auth.ID, errPersist)
 	}
 	if m.authEpochs[auth.ID] != auth.RegistrationEpoch {
@@ -342,6 +346,18 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	if mode == updateModeRefresh {
 		merged := MergeRefreshedAuth(base, existing, auth)
 		if merged != nil {
+			if auth.HubAuthority != nil {
+				merged.HubAuthority = auth.HubAuthority
+				merged.HubAccountID = auth.HubAccountID
+				merged.HubGeneration = auth.HubGeneration
+				merged.HubBaseline = auth.HubBaseline
+				merged.Metadata = auth.Metadata
+				merged.Attributes = auth.Attributes
+				merged.Disabled = auth.Disabled
+				merged.Label = auth.Label
+				merged.Prefix = auth.Prefix
+				merged.ProxyURL = auth.ProxyURL
+			}
 			auth = merged
 			NormalizeCredentialMetadata(auth.Metadata)
 		}
@@ -539,7 +555,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	persistMetaMint := (mode == updateModePrepare || mode == updateModeRefresh) && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta")
 	if errPersist := m.persistLocked(ctx, auth); errPersist != nil {
 		// A minted Meta key must reach the store before requests can use it.
-		if persistMetaMint {
+		if _, shared := m.store.(HubAuthority); persistMetaMint || shared {
 			m.mu.Unlock()
 			return nil, false, false, fmt.Errorf("persist meta auth: %w", errPersist)
 		}
@@ -751,6 +767,18 @@ func (m *Manager) Load(ctx context.Context) error {
 			continue
 		}
 		auth.EnsureIndex()
+		if auth.HubAuthority != nil {
+			if prev := previousAuths[auth.ID]; prev != nil {
+				if sameHubContent(prev, auth) {
+					m.auths[auth.ID] = prev.Clone()
+					continue
+				}
+				auth.Quota = prev.Quota.Clone()
+				auth.ModelStates = prev.ModelStates
+				auth.Success = prev.Success
+				auth.Failed = prev.Failed
+			}
+		}
 		m.authEpochs[auth.ID] = max(m.authEpochs[auth.ID], auth.RegistrationEpoch) + 1
 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
 		auth.Generation = 1

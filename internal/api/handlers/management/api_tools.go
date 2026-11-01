@@ -274,6 +274,11 @@ func (h *Handler) resolveTokenForAuth(ctx context.Context, auth *coreauth.Auth, 
 	if auth == nil {
 		return "", nil
 	}
+	if h.authManager != nil {
+		if err := h.authManager.AuthorizeHub(ctx, auth); err != nil {
+			return "", err
+		}
+	}
 
 	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
 		token, errToken := h.refreshAntigravityOAuthAccessToken(ctx, auth, requestProxyURL)
@@ -834,7 +839,8 @@ func (h *Handler) authByIndex(authIndex string) *coreauth.Auth {
 	return nil
 }
 
-func (h *Handler) apiCallTransport(auth *coreauth.Auth, requestProxyURL string) http.RoundTripper {
+func (h *Handler) apiCallTransport(auth *coreauth.Auth, requestProxyURL string) (out http.RoundTripper) {
+	defer func() { out = coreauth.GuardHubTransport(out, auth) }()
 	if proxyStr := strings.TrimSpace(requestProxyURL); proxyStr != "" {
 		if transport := buildProxyTransport(proxyStr); transport != nil {
 			return transport

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 	"net/http"
 	"net/url"
 	"strings"
@@ -487,6 +488,24 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 // Returns:
 //   - *ClaudeTokenData: The new token data with updated access token
 //   - error: An error if token refresh fails
+type refreshTokensOnlyKey struct{}
+
+// RefreshTokensOnce performs one rotation without redirects, retries or profile
+// requests. The shared authority must persist the returned tokens immediately.
+func (o *ClaudeAuth) RefreshTokensOnce(ctx context.Context, token string) (*ClaudeTokenData, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), claudeRefreshTimeout)
+	defer cancel()
+	copyAuth := *o
+	client := *o.httpClient
+	client.Transport = baseauth.GuardRefreshDispatch(client.Transport)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	copyAuth.httpClient = &client
+	return copyAuth.refreshTokensSingleFlight(context.WithValue(ctx, refreshTokensOnlyKey{}, true), token)
+}
+
 func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*ClaudeTokenData, error) {
 	if refreshToken == "" {
 		return nil, fmt.Errorf("refresh token is required")
@@ -587,6 +606,9 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
+	}
+	if ctx.Value(refreshTokensOnlyKey{}) == true {
+		return tokenData, nil
 	}
 	profile, errProfile := o.FetchOAuthProfile(ctx, tokenResp.AccessToken)
 	if errProfile != nil {
