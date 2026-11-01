@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -293,5 +294,67 @@ func TestSpentIncludedAllowanceRefusesPaidCredits(t *testing.T) {
 	}
 	if got, errExec := execute("team"); errExec != nil || got != team.ID {
 		t.Fatalf("Execute(pin=team) with allow_credits = %q, %v; want %q", got, errExec, team.ID)
+	}
+}
+
+// A Pro account's granted credits may be spent past its included window, but only
+// down to credits_floor: at or below the floor, or with no balance known, the hub
+// refuses it as before, so it never spends into bought credits (t10647).
+func TestCreditsFloorSpendsGrantedCreditsDownToTheFloor(t *testing.T) {
+	const model = "codex-credits-floor-test-model"
+	now := time.Now()
+	spent := &Auth{ID: "floor-pro", Provider: "codex", Metadata: map[string]any{MetadataGroup: "pro", MetadataCreditsFloor: json.Number("1000")},
+		Quota: QuotaState{ObservedAt: now.Add(-time.Minute), Signals: map[string]string{
+			"X-Codex-Primary-Used-Percent":   "100",
+			"X-Codex-Primary-Window-Minutes": "10080",
+			"X-Codex-Primary-Reset-At":       strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10),
+			"X-Codex-Credits-Has-Credits":    "True",
+			"X-Codex-Credits-Unlimited":      "False",
+			"X-Codex-Credits-Balance":        "1500.5",
+		}}}
+
+	m := NewManager(nil, &ConsumeFirstSelector{}, nil)
+	m.RegisterExecutor(&authFallbackExecutor{id: "codex"})
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(spent.ID, "codex", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { reg.UnregisterClient(spent.ID) })
+	if _, errRegister := m.Register(context.Background(), spent); errRegister != nil {
+		t.Fatalf("register: %v", errRegister)
+	}
+	execute := func() error {
+		opts := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.AccountPinMetadataKey: "pro"}}
+		_, errExec := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, opts)
+		return errExec
+	}
+	if errExec := execute(); errExec != nil {
+		t.Fatalf("balance above the floor: Execute = %v; want served", errExec)
+	}
+
+	// A later response without credit headers keeps the last balance.
+	observe := func(at time.Time, headers http.Header) {
+		headers.Set("X-Codex-Primary-Used-Percent", "100")
+		headers.Set("X-Codex-Primary-Window-Minutes", "10080")
+		headers.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10))
+		if !m.ObserveQuota(spent.ID, headers, at) {
+			t.Fatalf("ObserveQuota at %s not applied", at)
+		}
+	}
+	observe(now, http.Header{})
+	if errExec := execute(); errExec != nil {
+		t.Fatalf("response without credit headers: Execute = %v; want served on the kept balance", errExec)
+	}
+
+	for i, tc := range []struct{ hasCredits, balance string }{
+		{"True", "1000"},  // at the floor
+		{"False", "5000"}, // no credits
+	} {
+		headers := http.Header{}
+		headers.Set("X-Codex-Credits-Has-Credits", tc.hasCredits)
+		headers.Set("X-Codex-Credits-Balance", tc.balance)
+		observe(now.Add(time.Duration(i+1)*time.Second), headers)
+		var refusal *accountPinError
+		if errExec := execute(); !errors.As(errExec, &refusal) || !strings.Contains(refusal.Error(), "paid credits refused") {
+			t.Fatalf("has_credits=%s balance=%s: Execute = %v; want paid credits refused", tc.hasCredits, tc.balance, errExec)
+		}
 	}
 }

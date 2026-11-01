@@ -195,6 +195,33 @@ curl -X PATCH "$HUB/v8/management/credentials/fields" \
 Remove it again with `"allow_credits": null`. The credential listing shows `"allow_credits": true`
 while it is set. Rolling back the whole guard means deploying the previous binary.
 
+### Spending a granted credit pool (`credits_floor`)
+
+Some credits are already paid for and expire: each ChatGPT Pro account carries a one-off grant of
+Codex credits that lapses on 31 Dec 2026 (inventory on t10646). To spend those rather than lose
+them (t10647), set a floor on the account:
+
+```bash
+curl -X PATCH "$HUB/v8/management/credentials/fields" \
+  -H "Authorization: Bearer $MANAGEMENT_KEY" -H "Content-Type: application/json" \
+  -d '{"name": "<auth file name>", "credits_floor": 1000}'
+```
+
+While the account's included window reads 100%, the hub keeps routing to it as long as its credit
+balance is above the floor, so Codex bills the grant. At or below the floor, with `has_credits`
+false, with unlimited credits, or with no balance known, the guard refuses it exactly as above. The
+floor is the cap: the hub spends at most the balance above it, and the margin covers the balance
+read lagging behind traffic, so the account never reaches credits that would have to be bought.
+The account still ranks as spent, so consume-first uses every included window first and the credits
+last.
+
+The balance is the `x-codex-credits-*` figures Codex returns on its responses, and the usage poll
+reads the same figures from `wham/usage` (every `interval` while the account is spent, at least
+hourly while it serves). A response without those headers keeps the last balance. The listing
+shows the floor as `"credits_floor": <number>` and the balance as `usage.balance`
+(`{"left": ..., "currency": "credits"}`), which `allowances` prints. Remove the floor with
+`"credits_floor": null`; the account is then guarded as before.
+
 ## Account pins
 
 A client pins a request with one header:
@@ -279,8 +306,9 @@ config-file API keys (`source: "config"`), each with `cooldowns` and `usage`.
 - `usage`: `windows` (each `used_percent`, `window_minutes`, `reset_at`, and a `label` for
   extra windows), `plan`, `fetched_at` and the last poll `error`. Claude and Codex main windows
   come from the live quota headers; the rest from the last refresher poll. `balance` (`left`,
-  `total` when known, `currency`) for DeepSeek and CommandCode; `banked_resets` (each `expires_at`)
-  for Codex
+  `total` when known, `currency`) for DeepSeek and CommandCode, and for a Codex account with
+  credits (`currency: "credits"`); `banked_resets` (each `expires_at`) for Codex
+- `allow_credits` and `credits_floor` when set (paid-credits guard)
 
 Sort by `spent`, then entries with `reset_at` before those without, then `reset_at`, then
 `used_percent`, then `id` to reproduce the router's order within a priority tier.

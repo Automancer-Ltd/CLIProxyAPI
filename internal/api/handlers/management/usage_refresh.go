@@ -303,6 +303,9 @@ func (h *Handler) usageEntry(auth *coreauth.Auth) gin.H {
 	}
 	if record.Balance != nil {
 		entry["balance"] = record.Balance
+	} else if left, ok := coreauth.AuthCreditBalance(auth); ok {
+		// A Codex account's credit balance, in credits.
+		entry["balance"] = usageBalance{Left: left, Currency: "credits"}
 	}
 	if len(record.BankedResets) > 0 {
 		entry["banked_resets"] = record.BankedResets

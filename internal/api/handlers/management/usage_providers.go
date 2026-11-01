@@ -318,6 +318,19 @@ func parseCodexUsage(body gjson.Result) usageResult {
 			result.headers.Set(window.prefix+"reset-after-seconds", formatUsageFloat(after.Float()))
 		}
 	}
+	// The credit balance (a Pro account's granted credits) as the headers Codex
+	// responses carry, so the paid-credits guard can read it (credits_floor, t10647).
+	if credits := body.Get("credits"); credits.IsObject() {
+		for _, field := range []struct{ key, header string }{
+			{"has_credits", "x-codex-credits-has-credits"},
+			{"unlimited", "x-codex-credits-unlimited"},
+			{"balance", "x-codex-credits-balance"},
+		} {
+			if value := credits.Get(field.key); value.Exists() && value.Type != gjson.Null {
+				result.headers.Set(field.header, value.String())
+			}
+		}
+	}
 	for _, extra := range body.Get("additional_rate_limits").Array() {
 		for _, key := range []string{"primary_window", "secondary_window"} {
 			if value := extra.Get("rate_limit." + key); value.IsObject() {

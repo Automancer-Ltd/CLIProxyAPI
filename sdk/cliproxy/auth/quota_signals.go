@@ -32,6 +32,10 @@ func ProviderSupportsQuotaObservation(provider string) bool {
 // indefinitely. Responses that carry no quota signal at all (transport
 // failures, 5xx, unrelated endpoints) leave the previous snapshot untouched.
 //
+// A Codex credit balance is a level, not a watermark, and some Codex responses
+// omit it, so a response with no x-codex-credits-* header keeps the last ones.
+// The paid-credits guard reads them (credits_floor, t10647).
+//
 // This function only ever touches ObservedAt and Signals. Cooldown and
 // scheduling fields are never read or written here.
 func (q *QuotaState) ObserveResponseHeadersForProvider(provider string, headers http.Header, observedAt time.Time) bool {
@@ -45,12 +49,32 @@ func (q *QuotaState) ObserveResponseHeadersForProvider(provider string, headers 
 	if len(next) == 0 {
 		return false
 	}
+	if strings.EqualFold(strings.TrimSpace(provider), "codex") && !hasCodexCreditSignals(next) {
+		for key, value := range q.Signals {
+			if isCodexCreditSignal(key) {
+				next[key] = value
+			}
+		}
+	}
 	if observedAt.IsZero() {
 		observedAt = time.Now()
 	}
 	q.Signals = next
 	q.ObservedAt = observedAt
 	return true
+}
+
+func isCodexCreditSignal(key string) bool {
+	return strings.HasPrefix(strings.ToLower(key), "x-codex-credits-")
+}
+
+func hasCodexCreditSignals(signals map[string]string) bool {
+	for key := range signals {
+		if isCodexCreditSignal(key) {
+			return true
+		}
+	}
+	return false
 }
 
 // ClearObservationSignals removes only passive observation data. It leaves

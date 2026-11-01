@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -28,6 +29,11 @@ const (
 	// used up. The provider then bills the overage (Codex credits, Claude extra usage),
 	// so it is off unless set on the account.
 	MetadataAllowCredits = "allow_credits"
+	// MetadataCreditsFloor lets a Codex account keep serving past its included window
+	// while its credit balance stays above this number of credits. It is for a granted,
+	// expiring credit pool (the ChatGPT Pro grants, t10647): the floor caps how much of
+	// the balance the hub may spend, and an unknown balance is refused.
+	MetadataCreditsFloor = "credits_floor"
 )
 
 // AuthPinOnly reports whether the credential serves pinned requests only.
@@ -38,6 +44,70 @@ func AuthPinOnly(auth *Auth) bool {
 // AuthAllowCredits reports whether the credential may serve past its included allowance.
 func AuthAllowCredits(auth *Auth) bool {
 	return authMetadataFlag(auth, MetadataAllowCredits)
+}
+
+// AuthCreditsFloor returns the account's credits floor when one is set.
+func AuthCreditsFloor(auth *Auth) (float64, bool) {
+	if auth == nil {
+		return 0, false
+	}
+	var floor float64
+	switch value := auth.Metadata[MetadataCreditsFloor].(type) {
+	case float64:
+		floor = value
+	case int:
+		floor = float64(value)
+	case int64:
+		floor = float64(value)
+	case json.Number:
+		parsed, errParse := value.Float64()
+		if errParse != nil {
+			return 0, false
+		}
+		floor = parsed
+	case string:
+		parsed, errParse := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if errParse != nil {
+			return 0, false
+		}
+		floor = parsed
+	default:
+		return 0, false
+	}
+	if math.IsNaN(floor) || math.IsInf(floor, 0) || floor < 0 {
+		return 0, false
+	}
+	return floor, true
+}
+
+// AuthCreditBalance returns the credit balance the account last reported (the Codex
+// x-codex-credits-* headers, from traffic or the usage poll). It reports nothing
+// when the account has no credits or unlimited credits, which are billed.
+func AuthCreditBalance(auth *Auth) (float64, bool) {
+	if auth == nil {
+		return 0, false
+	}
+	signals := auth.Quota.Signals
+	if !strings.EqualFold(strings.TrimSpace(signals["X-Codex-Credits-Has-Credits"]), "true") ||
+		strings.EqualFold(strings.TrimSpace(signals["X-Codex-Credits-Unlimited"]), "true") {
+		return 0, false
+	}
+	balance, errParse := strconv.ParseFloat(strings.TrimSpace(signals["X-Codex-Credits-Balance"]), 64)
+	if errParse != nil || math.IsNaN(balance) || math.IsInf(balance, 0) {
+		return 0, false
+	}
+	return balance, true
+}
+
+// authCreditsAboveFloor reports whether the account may spend its credit balance:
+// a floor is set and the last reported balance is above it.
+func authCreditsAboveFloor(auth *Auth) bool {
+	floor, okFloor := AuthCreditsFloor(auth)
+	if !okFloor {
+		return false
+	}
+	balance, okBalance := AuthCreditBalance(auth)
+	return okBalance && balance > floor
 }
 
 func authMetadataFlag(auth *Auth, key string) bool {
@@ -57,7 +127,9 @@ func authMetadataFlag(auth *Auth, key string) bool {
 // any observed window is fully used and not yet reset. Past that point a Codex account
 // with credits, or a Claude account with extra usage, still answers and bills the
 // request, so the hub routes nothing to it (no paid fallback, t9765) unless
-// allow_credits is set. The usage refresher keeps polling it, so an early reset lifts this.
+// allow_credits is set, or credits_floor is set and the credit balance is above it
+// (a granted credit pool, t10647). The usage refresher keeps polling it, so an early
+// reset lifts this.
 func authIncludedSpentUntil(auth *Auth, now time.Time) (time.Time, bool) {
 	if auth == nil || AuthAllowCredits(auth) {
 		return time.Time{}, false
@@ -68,7 +140,10 @@ func authIncludedSpentUntil(auth *Auth, now time.Time) (time.Time, bool) {
 			until = window.resetAt
 		}
 	}
-	return until, !until.IsZero()
+	if until.IsZero() || authCreditsAboveFloor(auth) {
+		return time.Time{}, false
+	}
+	return until, true
 }
 
 func accountPinFromMetadata(meta map[string]any) string {
