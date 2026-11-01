@@ -47,9 +47,15 @@ func TestCanceledStreamAccountsGeneratedOutput(t *testing.T) {
 	}
 	cancel()
 	remaining <- cliproxyexecutor.StreamChunk{Payload: []byte(`{"type":"response.output_text.delta","delta":"hi"}`)}
-	for range result.Chunks {
+	// Do not read the output while the canceled delivery is being dropped: a reader would
+	// race the context check. Wait for the ledger instead, then drain the closed channel.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !CreditReadingOf(auth).Unknown {
+		time.Sleep(5 * time.Millisecond)
 	}
 	if reading := CreditReadingOf(auth); !reading.Unknown {
 		t.Fatal("canceled stream with generated output: reading still known; want unknown")
+	}
+	for range result.Chunks {
 	}
 }
