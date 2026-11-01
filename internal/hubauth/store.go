@@ -240,15 +240,19 @@ func (s *Store) Refresh(ctx context.Context, a *coreauth.Auth, provider func(con
 }
 
 func (s *Store) Save(ctx context.Context, a *coreauth.Auth) (string, error) {
-	// Login identity/deduplication and the commit form one local transaction.
-	// Ownership fencing excludes other processes; this gate excludes simultaneous
-	// management uploads that otherwise both observe an absent account.
-	s.saves.Lock()
-	defer s.saves.Unlock()
 	raw, err := encodeCredential(a)
 	if err != nil {
 		return "", err
 	}
+	// Scheduler counters/status are local runtime state and are not encoded in
+	// this store. An unchanged snapshot is not a credential write or a grant of
+	// serving rights: leave it alone, even if a remote read is currently blocked.
+	if !coreauth.HasAuthCreationIntent(ctx) && a.HubAuthority == s && a.HubAccountID != "" && a.HubGeneration > 0 && bytes.Equal(raw, a.HubBaseline) {
+		return "hub:" + a.HubAccountID, nil
+	}
+	// Serialize actual edits/login deduplication; no-op runtime saves stay out.
+	s.saves.Lock()
+	defer s.saves.Unlock()
 	requested, err := decodeCredential(raw)
 	if err != nil {
 		return "", err

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -333,7 +334,11 @@ func TestPartitionRestartAndLateRefresh(t *testing.T) {
 	entered, complete := make(chan struct{}), make(chan struct{})
 	finished := make(chan error, 1)
 	go func() {
-		_, err := primary.Refresh(ctx, id, 1, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		_, err := primary.Refresh(ctx, id, 1, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+			if err := baseauth.CheckRefreshDispatch(ctx); err != nil {
+				return nil, err
+			}
+
 			close(entered)
 			<-complete
 			return json.RawMessage(`{"refresh_token":"fixture-secret-new","hold_until":""}`), nil
@@ -355,7 +360,13 @@ func TestPartitionRestartAndLateRefresh(t *testing.T) {
 		t.Fatalf("unresolved grant served: %v", err)
 	}
 	calls := 0
-	if _, err := standby.Refresh(ctx, id, 1, func(context.Context, json.RawMessage) (json.RawMessage, error) { calls++; return nil, nil }); err == nil || calls != 0 {
+	if _, err := standby.Refresh(ctx, id, 1, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		if err := baseauth.CheckRefreshDispatch(ctx); err != nil {
+			return nil, err
+		}
+		calls++
+		return nil, nil
+	}); err == nil || calls != 0 {
 		t.Fatal("standby repeated unresolved refresh")
 	}
 	// Another usable account keeps working despite the quarantined grant.
@@ -413,7 +424,13 @@ func TestLostBeginReplyNeverCallsProvider(t *testing.T) {
 	f.failReply = "refresh.begin"
 	calls := 0
 	for range 2 {
-		_, _ = primary.Refresh(ctx, id, 1, func(context.Context, json.RawMessage) (json.RawMessage, error) { calls++; return nil, nil })
+		_, _ = primary.Refresh(ctx, id, 1, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+			if err := baseauth.CheckRefreshDispatch(ctx); err != nil {
+				return nil, err
+			}
+			calls++
+			return nil, nil
+		})
 	}
 	if calls != 0 {
 		t.Fatal("ambiguous begin caused provider call")
@@ -427,7 +444,11 @@ func TestFailedPublicationAndNewerLogin(t *testing.T) {
 	f, b, primary, _, id := setupPair(t)
 	ctx := context.Background()
 	b.failPut = true
-	_, err := primary.Refresh(ctx, id, 1, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+	_, err := primary.Refresh(ctx, id, 1, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		if err := baseauth.CheckRefreshDispatch(ctx); err != nil {
+			return nil, err
+		}
+
 		return json.RawMessage(`{"refresh_token":"fixture-secret-rotated"}`), nil
 	})
 	if err == nil {
@@ -457,7 +478,11 @@ func TestUploadAndCommitLostRepliesReadBack(t *testing.T) {
 	f, b, primary, _, id := setupPair(t)
 	b.lostPutReply = true
 	f.failReply = "commit"
-	r, err := primary.Refresh(context.Background(), id, 1, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+	r, err := primary.Refresh(context.Background(), id, 1, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		if err := baseauth.CheckRefreshDispatch(ctx); err != nil {
+			return nil, err
+		}
+
 		return json.RawMessage(`{"refresh_token":"fixture-secret-rotated"}`), nil
 	})
 	if err != nil || r.Generation != 2 {
@@ -469,14 +494,60 @@ func TestUploadAndCommitLostRepliesReadBack(t *testing.T) {
 }
 
 func TestDelayedBeginCannotExtendLocalLease(t *testing.T) {
-	f, _, primary, _, id := setupPair(t)
-	now := time.Now()
-	primary.now = func() time.Time { return now }
-	f.afterBegin = func() { now = now.Add(time.Minute) }
-	calls := 0
-	_, err := primary.Refresh(context.Background(), id, 1, func(context.Context, json.RawMessage) (json.RawMessage, error) { calls++; return nil, nil })
-	if err == nil || calls != 0 {
-		t.Fatal("late begin response extended expired provider permission")
+	f, blobs, primary, _, id := setupPair(t)
+	ctx := context.Background()
+	other := uuid.NewString()
+	if _, err := primary.Login(ctx, other, 0, json.RawMessage(`{"refresh_token":"fixture-secret-other"}`)); err != nil {
+		t.Fatal(err)
+	}
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	primary.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	f.afterBegin = func() { clock.Add(int64(time.Minute)) }
+	sends := 0
+	transport := baseauth.GuardRefreshDispatch(fixtureTransport(func(*http.Request) (*http.Response, error) {
+		sends++
+		return &http.Response{StatusCode: 200, Body: http.NoBody}, nil
+	}))
+	_, err := primary.Refresh(ctx, id, 1, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		req, _ := http.NewRequestWithContext(ctx, "POST", "https://fixture.invalid/refresh", nil)
+		resp, err := transport.RoundTrip(req)
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil, err
+	})
+	if err == nil || sends != 0 {
+		t.Fatal("late begin response reached native transport")
+	}
+	f.mu.Lock()
+	f.afterBegin = nil
+	if len(f.intents) != 1 || !f.accounts[id].Quarantined || f.accounts[id].Generation != 1 {
+		t.Fatal("delayed permit was cleared or rearmed")
+	}
+	for _, intent := range f.intents {
+		if intent.State != "unresolved" {
+			t.Fatal("unsent result fabricated")
+		}
+	}
+	f.mu.Unlock()
+	blobs.mu.Lock()
+	for key := range blobs.data {
+		if strings.Contains(key, "/results/") {
+			t.Fatal("unsent provider result fabricated")
+		}
+	}
+	blobs.mu.Unlock()
+	// The fixture still recognizes this epoch; a successful renewal establishes
+	// a fresh deadline without resolving or rearming the old account's intent.
+	if err := primary.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := primary.Authorize(ctx, id, 1); !errors.Is(err, ErrQuarantined) {
+		t.Fatal("delayed permit lost quarantine", err)
+	}
+	if _, err := primary.Authorize(ctx, other, 1); err != nil {
+		t.Fatal("delayed permit blocked unrelated account", err)
 	}
 }
 
@@ -518,7 +589,13 @@ func TestWatcherTransferDoesNotGrantProviderAuthority(t *testing.T) {
 		t.Fatal("watcher transfer revoked healthy process", err)
 	}
 	calls := 0
-	if _, err := standby.Refresh(ctx, id, 1, func(context.Context, json.RawMessage) (json.RawMessage, error) { calls++; return nil, nil }); err == nil || calls != 0 {
+	if _, err := standby.Refresh(ctx, id, 1, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		if err := baseauth.CheckRefreshDispatch(ctx); err != nil {
+			return nil, err
+		}
+		calls++
+		return nil, nil
+	}); err == nil || calls != 0 {
 		t.Fatal("watcher event authorized provider")
 	}
 }

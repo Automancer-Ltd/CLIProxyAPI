@@ -10,7 +10,8 @@ preserve the currently enabled routes. No production credential, binary, service
 - Tracker t12884 owns `apps/tracker/HUB-AUTHORITY.md` and `packages/tracker-contract/src/hub.ts` in
   Automancer-Ltd/automancer-dashboard. Baseline PR1056 merged as `35b4aa6f20099596b05cf933b09dd220faf6805e` after
   exact-commit review of `c57959855e6420c170a48936c70e7f6cef1af5e1`. The metadata extension is PR1065 source
-  `7b8fc29d51cf7e5c2397a8b19422cf8926670ea1`. Reconcile its accepted review, merge and served contract before activation.
+  `7b8fc29d51cf7e5c2397a8b19422cf8926670ea1`; admission wording is now at
+  `a089ee5bd97f9528a4ce3fee7bc82cb6147b4098` with unchanged schemas. Reconcile its accepted review, merge and served contract before activation.
   A previous review of PR1056 does not review the metadata extension.
 - t12900 owns the dedicated private B2 prefix, key and encryption binding. Its human credential-transfer dependency
   is t13054. The Tracker Access pair alone cannot read B2 or decrypt credentials.
@@ -50,10 +51,20 @@ Each boot generates a random process nonce. Tracker grants a separate hub-proces
 chooses its watcher. Conservative expiry uses monotonic request-start time and a safety margin. Acquire, renew,
 hydrate and the current account controls govern serving. There is no local-file fallback.
 
-A refresh records a durable intent before the provider call. Only the first `provider_call_allowed:true` permits a
-callback. The actual native refresh HTTP dispatch consumes a second local one-use check of the same epoch/head;
-delayed work cannot extend the lease. Native refresh has no retries or redirect replay. Claude returns rotation data
-before any optional profile lookup. Ambiguous calls quarantine only the affected account generation.
+A refresh finishes request preparation before creating its durable intent inside the final native HTTP dispatch
+check. That check serializes with local Stop, synchronizes the latest head, and compares the prepared target grant
+and controls. Unrelated account changes do not invalidate that baseline. Only the first
+`provider_call_allowed:true` admits one provider call. There is no post-begin global-head read to re-authorize it.
+Later controls still govern serving, and result commits preserve current controls and reject superseded generations.
+The local guard consumes permission once and checks the conservative deadline after the reply. It also closes when
+the callback returns, so retained callback contexts cannot create later admissions.
+
+Parent decision t12884 event183361 keeps the existing protocol: if an accepted begin reply is lost or arrives after
+the conservative deadline, send nothing and retain the unresolved intent. There is no unsent cancellation/rearm or
+fabricated successful refresh/login. This can require a new genuine login for that account even when the process
+knows it sent nothing; it is an accepted availability limitation of the inactive foundation. A local attempted begin
+also survives an older account-list reply until a definite authority refusal or a newer grant generation resolves it.
+Native refresh has no retries or redirect replay. Claude returns rotation data before any optional profile lookup.
 
 Encrypted objects use `HSN1` + random 12-byte nonce + AES-256-GCM ciphertext/tag. The full object key is associated
 data. Tracker stores only UUIDs, encrypted digests, counters and pointers. Object names are write-once in the client;
@@ -80,7 +91,10 @@ quarantine by advancing a generation.
 `internal/hubauth` owns protocol, encrypted objects, coordinator and native Store adapter. `sdk/cliproxy/auth/hub.go`
 gates Manager execution, counting, streams, retries, preparation, raw HTTP and refresh. The native Claude/Codex refresh
 entry points also route direct calls through the authority. HTTP transports recheck the hydrated generation and
-controls at actual dispatch. Management usage/token helpers use the same guard. Authoritative save failures are fatal
+controls at actual dispatch. Each authorization reads live owner/head state without holding the mutation mutex and
+compares it with immutable verified snapshot data, current local quarantine and the conservative deadline. A changed
+head requires serialized hydration before serving; there is no stale-control grace period. Delayed reads cannot
+replace newer local state. An unchanged runtime Store.Save performs no credential I/O; it grants no serving rights. Management usage/token helpers use the same guard. Authoritative save failures are fatal
 before publishing memory. Polling the head preserves unchanged local runtime state and repairs changed snapshots.
 
 Service startup installs the shared store before refresh and HTTP serving, and never ingests the copied auth directory.
@@ -158,8 +172,16 @@ Claude result-before-profile and direct executor gating. Config migration must r
 Checks run through `heavy` with bounded Go workers. The focused Manager/management/native tests pass. Server build,
 vet on touched packages and the hub suite with the race detector passed on m6, including the final dispatch check and config migration regression. Fork CI builds and runs all changed Go packages plus its hub packages.
 
-Next: complete the final checks, commit/push one fork PR, record its exact head/CI and request Q7 authentication review
-on t12857. End the turn after setting in_review. Reconcile t12884's final reviewed metadata merge before sign-off.
+Q7 rejected the first head `05b12bae` for stranding pre-send intents after unrelated head changes and serializing
+request-path Tracker calls under the mutation mutex. Both were then reproduced in public-Manager synthetic tests.
+The corrected hub suite passed with the race detector on auto-vault; server build and touched-package vet also passed.
+The corrected tests cover concurrent account refresh completion, metadata/hold/Stop before admission without a
+stranded intent, a delayed accepted permit with zero native sends and retained quarantine, independent requests
+while one authority read stalls, rejection of that stale reply after a hold, unchanged runtime saves without network
+I/O, and a lost begin acknowledgment whose insertion occurs after an older account-list reply.
+
+Next: publish the corrected head and final-head CI on the existing fork PR47, then request fresh Q7 authentication
+review on t12857 and end the turn. Reconcile t12884's final reviewed metadata merge before sign-off.
 After this foundation merges, t13262 supplies the activation coverage; parent t12792 retains live acceptance.
 
 Last verified: 2026-11-01, synthetic credentials on auto-vault/m6 and source/Tracker reads. No production activation.

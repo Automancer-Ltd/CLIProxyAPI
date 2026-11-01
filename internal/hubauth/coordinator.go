@@ -49,13 +49,43 @@ type Coordinator struct {
 	loaded      *Head
 	stopped     bool
 	mergeResult func(current, refreshed json.RawMessage) (json.RawMessage, error)
+	view        atomic.Pointer[authorizationView]
+	pending     map[string]int64 // attempted begins survive an older accounts.list reply
+}
+
+// Immutable, verified snapshot data. Serving reads this without taking the
+// mutation mutex, and checks the live owner/head with Tracker for every dispatch.
+// It is never a cached serving permission or a grace period for stale controls.
+type authorizationView struct {
+	fence    Fence
+	head     Head
+	deadline time.Time
+	accounts map[string]Account
+	records  map[string]Record
+}
+
+// Called only under mu. Publish copies so a concurrent refresh cannot mutate a
+// serving reader's account/quarantine state in place.
+func (c *Coordinator) publishAuthorization() {
+	if !c.owned() || !c.state.Ownership.CanServe || c.loaded == nil || !sameHead(*c.loaded, c.state.Head) {
+		c.view.Store(nil)
+		return
+	}
+	v := &authorizationView{fence: c.fence, head: *c.loaded, deadline: c.deadline, accounts: make(map[string]Account, len(c.accounts)), records: make(map[string]Record, len(c.snapshot.Accounts))}
+	for id, a := range c.accounts {
+		v.accounts[id] = a
+	}
+	for id, r := range c.snapshot.Accounts {
+		v.records[id] = r
+	}
+	c.view.Store(v)
 }
 
 func NewCoordinator(client *Client, objects *Objects, host string) (*Coordinator, error) {
 	if client == nil || objects == nil || (host != "m6" && host != "auto-vps") {
 		return nil, errors.New("hub coordinator configuration invalid")
 	}
-	return &Coordinator{client: client, objects: objects, fence: Fence{Host: host, InstanceID: uuid.NewString()}, now: time.Now}, nil
+	return &Coordinator{client: client, objects: objects, fence: Fence{Host: host, InstanceID: uuid.NewString()}, now: time.Now, pending: make(map[string]int64)}, nil
 }
 
 // SetResultMerger installs the embedding application's credential/control boundary.
@@ -122,10 +152,14 @@ func (c *Coordinator) owned() bool {
 }
 
 func (c *Coordinator) stateCall(ctx context.Context, tool string, input any) error {
+	if tool == "drain" || tool == "release" {
+		c.view.Store(nil)
+	}
 	start := c.now()
 	var state State
 	if err := c.client.call(ctx, tool, input, &state); err != nil {
 		c.deadline = time.Time{}
+		c.view.Store(nil)
 		return err
 	}
 	c.observe(state, start)
@@ -259,8 +293,20 @@ func (c *Coordinator) sync(ctx context.Context) error {
 		copyHead := head
 		c.loaded = &copyHead
 	}
+	// A timed-out begin can still reach Tracker after this list was produced.
+	// Only a definite rejection or a later generation resolves local uncertainty.
+	for id, generation := range c.pending {
+		a, ok := accounts[id]
+		if ok && a.Generation > generation {
+			delete(c.pending, id)
+		} else if ok && a.Generation == generation {
+			a.Quarantined = true
+			accounts[id] = a
+		}
+	}
 	c.accounts = accounts
 	if c.owned() && c.state.Ownership.CanServe && c.state.Ownership.HydratedRevision != nil && *c.state.Ownership.HydratedRevision == head.Revision {
+		c.publishAuthorization()
 		return nil
 	}
 	var sha *string
@@ -278,6 +324,7 @@ func (c *Coordinator) sync(ctx context.Context) error {
 	if !c.owned() || !c.state.Ownership.CanServe || !sameHead(c.state.Head, head) {
 		return ErrUnavailable
 	}
+	c.publishAuthorization()
 	return nil
 }
 
@@ -302,24 +349,58 @@ func (c *Coordinator) Current(ctx context.Context) (map[string]Record, map[strin
 }
 
 func (c *Coordinator) Authorize(ctx context.Context, id string, generation int64) (Record, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err := c.sync(ctx); err != nil {
-		return Record{}, err
+	for attempt := 0; attempt < 2; attempt++ {
+		// Do not hold the mutation mutex over this read. A delayed reply for one
+		// request cannot stall another account or local scheduler accounting.
+		start := c.now()
+		var state State
+		if err := c.client.call(ctx, "get", struct{}{}, &state); err != nil {
+			return Record{}, err
+		}
+		v := c.view.Load()
+		if v == nil || !sameHead(state.Head, v.head) {
+			// Only changed/unhydrated heads need serialized object/control loading.
+			// The steady request path never enumerates accounts or writes hydration.
+			if attempt != 0 {
+				return Record{}, ErrUnavailable
+			}
+			c.mu.Lock()
+			err := c.sync(ctx)
+			c.mu.Unlock()
+			if err != nil {
+				return Record{}, err
+			}
+			continue
+		}
+		o := state.Ownership
+		ttlMS := o.ExpiresInMS
+		if ttlMS > 30000 {
+			ttlMS = 30000
+		}
+		now := c.now()
+		if ttlMS <= 1000 || !now.Before(start.Add(time.Duration(ttlMS)*time.Millisecond-time.Second)) || !now.Before(v.deadline) || !o.Live || !o.CanServe || o.Phase != "serving" || o.Host != v.fence.Host || o.InstanceID != v.fence.InstanceID || o.Epoch != v.fence.Epoch || o.HydratedRevision == nil || *o.HydratedRevision != v.head.Revision {
+			return Record{}, ErrUnavailable
+		}
+		a, ok := v.accounts[id]
+		if !ok || a.Status != "active" || a.Generation != generation {
+			return Record{}, ErrUnavailable
+		}
+		if a.Quarantined {
+			return Record{}, ErrQuarantined
+		}
+		r := v.records[id]
+		r.Data = bytes.Clone(r.Data)
+		// A local begin/commit/drain during the read invalidates this observation.
+		if c.view.Load() != v {
+			return Record{}, ErrUnavailable
+		}
+		return r, nil
 	}
-	a, ok := c.accounts[id]
-	if !ok || a.Status != "active" || a.Generation != generation {
-		return Record{}, ErrUnavailable
-	}
-	if a.Quarantined {
-		return Record{}, ErrQuarantined
-	}
-	r := c.snapshot.Accounts[id]
-	r.Data = bytes.Clone(r.Data)
-	return r, nil
+	return Record{}, ErrUnavailable
 }
 
 func (c *Coordinator) commit(ctx context.Context, input Commit) (Receipt, error) {
+	c.view.Store(nil)
 	var reply struct {
 		Receipt Receipt `json:"receipt"`
 	}
@@ -403,41 +484,40 @@ func (c *Coordinator) publishCommit(ctx context.Context, next snapshot, change C
 	return c.commit(ctx, Commit{Authority: c.fence, ExpectedRevision: c.state.Head.Revision, OperationID: operationID, Change: change})
 }
 
-// Refresh grants exactly one callback execution for this account generation.
-// The callback must make at most one call per grant and must not persist locally.
-// A provider error is ambiguous and leaves the generation quarantined.
+// Refresh prepares a request without consuming the grant. The callback must
+// use GuardRefreshDispatch at its native HTTP boundary: only that final check
+// creates the durable intent. Preparation failures leave no intent to strand.
 func (c *Coordinator) Refresh(ctx context.Context, id string, generation int64, provider func(context.Context, json.RawMessage) (json.RawMessage, error)) (Record, error) {
-	intent, base, err := c.begin(ctx, id, generation)
+	base, err := c.Authorize(ctx, id, generation)
 	if err != nil {
 		return Record{}, err
 	}
-	// Dispatch under the same local state lock as Stop/Step. Once dispatched,
-	// cancellation cannot prove that the provider did not rotate its grant.
-	c.mu.Lock()
-	allowed := c.owned() && c.state.Ownership.CanServe && c.state.Head.Revision == intent.ExpectedRevision
-	c.mu.Unlock()
-	if !allowed {
-		return Record{}, ErrUnavailable
-	}
-	var dispatched atomic.Bool
+	var dispatchMu sync.Mutex
+	var intent Intent
+	used, closed := false, false
 	dispatchCtx := baseauth.WithRefreshDispatch(ctx, func(callCtx context.Context) error {
-		if dispatched.Swap(true) {
+		dispatchMu.Lock()
+		defer dispatchMu.Unlock()
+		if used || closed {
 			return errors.New("hub provider permission already consumed")
 		}
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if !c.owned() {
-			return ErrUnavailable
-		}
-		if err := c.stateCall(callCtx, "get", struct{}{}); err != nil {
-			return err
-		}
-		if !c.owned() || !c.state.Ownership.CanServe || c.state.Head.Revision != intent.ExpectedRevision {
-			return ErrUnavailable
-		}
-		return nil
+		used = true
+		var err error
+		intent, err = c.begin(callCtx, id, generation, base.Data)
+		return err
 	})
 	data, providerErr := provider(dispatchCtx, base.Data)
+	dispatchMu.Lock()
+	closed = true
+	admitted := intent.ID != ""
+	dispatchMu.Unlock()
+	if !admitted {
+		// Never invent provider output or resolve an uncertain accepted begin. The
+		// contract retains a lost/delayed permit, but ordinary preparation/refusal
+		// before begin consumes nothing and may be retried with fresh account data.
+		return Record{}, errors.New("hub refresh was not dispatched")
+	}
+
 	if providerErr != nil && !json.Valid(data) {
 		return Record{}, errors.New("hub refresh outcome unknown; generation quarantined")
 	}
@@ -471,18 +551,26 @@ func (c *Coordinator) Refresh(ctx context.Context, id string, generation int64, 
 	return r, nil
 }
 
-func (c *Coordinator) begin(ctx context.Context, id string, generation int64) (Intent, Record, error) {
+func (c *Coordinator) begin(ctx context.Context, id string, generation int64, baseline json.RawMessage) (Intent, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.sync(ctx); err != nil {
-		return Intent{}, Record{}, err
+		return Intent{}, err
 	}
 	a, ok := c.accounts[id]
 	if !ok || a.Status != "active" || a.Generation != generation {
-		return Intent{}, Record{}, ErrUnavailable
+		return Intent{}, ErrUnavailable
 	}
 	if a.Quarantined {
-		return Intent{}, Record{}, ErrQuarantined
+		return Intent{}, ErrQuarantined
+	}
+	// Head changes on other accounts do not change this prepared request. A
+	// changed target grant/control must be reloaded before creating any intent.
+	if !bytes.Equal(c.snapshot.Accounts[id].Data, baseline) {
+		return Intent{}, ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return Intent{}, err
 	}
 	input := struct {
 		Authority        Fence  `json:"authority"`
@@ -496,36 +584,36 @@ func (c *Coordinator) begin(ctx context.Context, id string, generation int64) (I
 		Intent  Intent `json:"intent"`
 		State   State  `json:"state"`
 	}
+	// Begin changes quarantine without advancing the head. Publish the local
+	// restriction before its network call, including while its reply is unknown.
+	a.Quarantined = true
+	c.accounts[id] = a
+	c.pending[id] = generation
+	c.publishAuthorization()
 	start := c.now()
 	if err := c.client.call(ctx, "refresh.begin", input, &reply); err != nil {
-		return Intent{}, Record{}, err
+		var refusal *Refusal
+		if errors.As(err, &refusal) {
+			// A typed authority refusal proves this attempt inserted no intent.
+			delete(c.pending, id)
+			a.Quarantined = false
+			c.accounts[id] = a
+			c.publishAuthorization()
+		}
+		return Intent{}, err
 	}
 	c.observe(reply.State, start)
 	if !reply.Allowed || !c.owned() || !c.state.Ownership.CanServe || c.state.Head.Revision != input.ExpectedRevision {
-		return Intent{}, Record{}, ErrQuarantined
+		return Intent{}, ErrQuarantined
 	}
-	var read struct {
-		Intent *Intent `json:"intent"`
+	// The atomic begin response is the final admission, not a historical
+	// lookup followed by another global-head check. No provider call is permitted
+	// if its first response is lost or arrives outside the conservative deadline.
+	i := reply.Intent
+	if i.State != "unresolved" || i.ID != input.IntentID || i.AccountID != id || i.Generation != generation || i.Epoch != c.fence.Epoch || i.Host != c.fence.Host || i.InstanceID != c.fence.InstanceID || i.ExpectedRevision != input.ExpectedRevision || i.ResultKey != objectPrefix+"results/"+input.IntentID {
+		return Intent{}, ErrQuarantined
 	}
-	if err := c.client.call(ctx, "refresh.get", struct {
-		ID string `json:"intent_id"`
-	}{input.IntentID}, &read); err != nil {
-		return Intent{}, Record{}, err
-	}
-	if read.Intent == nil || read.Intent.State != "unresolved" || read.Intent.ID != input.IntentID || read.Intent.AccountID != id || read.Intent.Generation != generation || read.Intent.Epoch != c.fence.Epoch || read.Intent.Host != c.fence.Host || read.Intent.InstanceID != c.fence.InstanceID || read.Intent.ResultKey != objectPrefix+"results/"+input.IntentID {
-		return Intent{}, Record{}, ErrQuarantined
-	}
-	// A delayed begin/read response cannot confer rights after lease expiry or
-	// an administrative head change. Permission is consumed if either is uncertain.
-	if err := c.stateCall(ctx, "get", struct{}{}); err != nil {
-		return Intent{}, Record{}, err
-	}
-	if !c.owned() || !c.state.Ownership.CanServe || c.state.Head.Revision != input.ExpectedRevision {
-		return Intent{}, Record{}, ErrQuarantined
-	}
-	base := c.snapshot.Accounts[id]
-	base.Data = bytes.Clone(base.Data)
-	return *read.Intent, base, nil
+	return i, nil
 }
 
 func (c *Coordinator) recoverIntent(ctx context.Context, intent Intent) error {
@@ -604,7 +692,7 @@ func (c *Coordinator) Recover(ctx context.Context) error {
 func (c *Coordinator) Stop(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	defer func() { c.stopped = true; c.deadline = time.Time{} }()
+	defer func() { c.stopped = true; c.deadline = time.Time{}; c.view.Store(nil) }()
 	if !c.owned() {
 		return nil
 	}
