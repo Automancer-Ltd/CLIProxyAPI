@@ -152,7 +152,7 @@ func (h *Handler) refreshUsage(ctx context.Context, now time.Time) {
 		busy := observes && now.Sub(observed) < every && !creditsFloor &&
 			!(kind == "codex" && now.Sub(record.AttemptedAt) >= usageBankedFloor)
 		due := fetch != nil && usageProviderEnabled(cfg, kind) && !busy &&
-			(now.Sub(record.AttemptedAt) >= every || (creditsFloor && auth.Quota.Credits.Unknown))
+			(now.Sub(record.AttemptedAt) >= every || (creditsFloor && coreauth.CreditReadingOf(auth.ID).Unknown))
 		if due {
 			record = h.pollUsage(ctx, auth, fetch, record, now)
 			changed = true

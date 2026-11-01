@@ -85,14 +85,14 @@ func AuthCreditsFloor(auth *Auth) (float64, bool) {
 // hub); an older reading, or none, is unknown and the guard refuses the account.
 const CreditReadingMaxAge = 30 * time.Minute
 
-// AuthCreditBalance returns the credit balance the usage poll last read, while that
-// reading is recent. It reports nothing when the account has no credits or unlimited
-// credits, which are billed.
+// AuthCreditBalance returns the account's known credit balance while its poll reading is
+// recent (credit_ledger.go). It reports nothing when the account has no credits or
+// unlimited credits, which are billed.
 func AuthCreditBalance(auth *Auth, now time.Time) (float64, bool) {
 	if auth == nil {
 		return 0, false
 	}
-	reading := auth.Quota.Credits
+	reading := credits.get(auth.ID)
 	if reading.ReadAt.IsZero() || reading.Unknown || now.Sub(reading.ReadAt) > CreditReadingMaxAge ||
 		!reading.HasCredits || reading.Unlimited || math.IsNaN(reading.Balance) || math.IsInf(reading.Balance, 0) {
 		return 0, false
@@ -102,8 +102,8 @@ func AuthCreditBalance(auth *Auth, now time.Time) (float64, bool) {
 
 // authCreditsAboveFloor reports whether the account may spend its credit balance:
 // a floor is set and a recent, known balance is above it. Traffic lowers the reading
-// (trackCreditSpend); a response reports the balance before its own cost, so requests
-// in flight are not counted and the floor must cover what concurrent requests spend.
+// (Manager.observeCreditSpend); a reported balance does not yet include requests in
+// flight, so the floor must cover what concurrent requests spend.
 func authCreditsAboveFloor(auth *Auth, now time.Time) bool {
 	floor, okFloor := AuthCreditsFloor(auth)
 	if !okFloor {
@@ -154,32 +154,6 @@ func includedExhaustedUntil(quota QuotaState, now time.Time) time.Time {
 		}
 	}
 	return until
-}
-
-// trackCreditSpend lowers the credit reading as traffic spends it: to the balance a
-// Codex response reports when that is lower. A response served past the included
-// allowance that reports no balance makes the reading unknown, so the guard refuses
-// the account until a newer poll. It never raises the reading; only a poll does
-// (ObserveCredits). It reports whether the reading changed.
-func (q *QuotaState) trackCreditSpend(provider string, headers http.Header, now time.Time) bool {
-	if q == nil || q.Credits.ReadAt.IsZero() || !strings.EqualFold(strings.TrimSpace(provider), "codex") {
-		return false
-	}
-	if reported, errParse := strconv.ParseFloat(strings.TrimSpace(headers.Get("X-Codex-Credits-Balance")), 64); errParse == nil &&
-		!math.IsNaN(reported) && !math.IsInf(reported, 0) {
-		if reported >= q.Credits.Balance {
-			return false
-		}
-		q.Credits.Balance, q.Credits.UpdatedAt = reported, now
-		return true
-	}
-	if includedExhaustedUntil(*q, now).IsZero() {
-		return false
-	}
-	// Advance UpdatedAt on every such response, so only a poll that started after the
-	// last one can clear Unknown.
-	q.Credits.Unknown, q.Credits.UpdatedAt = true, now
-	return true
 }
 
 func accountPinFromMetadata(meta map[string]any) string {

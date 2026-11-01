@@ -376,7 +376,6 @@ func (m *Manager) PersistMetadataEntry(ctx context.Context, id string, expectedE
 	if current.Generation > updated.Generation {
 		updated.Generation = current.Generation
 	}
-	updated.Quota.Credits = newerCreditReading(updated.Quota.Credits, current.Quota.Credits)
 	m.auths[id] = updated.Clone()
 	m.mu.Unlock()
 	return true, false

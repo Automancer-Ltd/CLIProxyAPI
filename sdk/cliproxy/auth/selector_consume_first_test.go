@@ -320,6 +320,7 @@ func TestCreditsFloorSpendsGrantedCreditsDownToTheFloor(t *testing.T) {
 	reg := registry.GetGlobalRegistry()
 	reg.RegisterClient(spent.ID, "codex", []*registry.ModelInfo{{ID: model}})
 	t.Cleanup(func() { reg.UnregisterClient(spent.ID) })
+	t.Cleanup(func() { credits.forget(spent.ID) })
 	if _, errRegister := m.Register(context.Background(), spent); errRegister != nil {
 		t.Fatalf("register: %v", errRegister)
 	}
@@ -425,6 +426,7 @@ func TestCreditReadingReachesSchedulerStrategies(t *testing.T) {
 	const otherModel = "codex-credits-scheduler-other-model"
 	reg.RegisterClient(spent.ID, "codex", []*registry.ModelInfo{{ID: model}, {ID: otherModel}})
 	t.Cleanup(func() { reg.UnregisterClient(spent.ID) })
+	t.Cleanup(func() { credits.forget(spent.ID) })
 	if _, errRegister := m.Register(context.Background(), spent); errRegister != nil {
 		t.Fatalf("register: %v", errRegister)
 	}
@@ -459,12 +461,28 @@ func TestCreditReadingReachesSchedulerStrategies(t *testing.T) {
 	if _, errUpdate := m.Update(context.Background(), edit); errUpdate != nil {
 		t.Fatalf("update: %v", errUpdate)
 	}
-	if got, _ := m.GetByID(spent.ID); got.Quota.Credits.Balance != 900 {
-		t.Fatalf("after an edit from an earlier copy: balance = %v; want 900", got.Quota.Credits.Balance)
+	if got := CreditReadingOf(spent.ID).Balance; got != 900 {
+		t.Fatalf("after an edit from an earlier copy: balance = %v; want 900", got)
 	}
 	if execute() == nil {
 		t.Fatal("edit from an earlier copy restored 1500: served; want refused")
 	}
+	// A poll that lowers the balance refuses every model, including one that has
+	// already been served from its own scheduler snapshot.
+	executeModel := func(name string) error {
+		_, errExec := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: name}, cliproxyexecutor.Options{})
+		return errExec
+	}
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now.Add(4 * time.Millisecond)})
+	if executeModel(model) != nil || executeModel(otherModel) != nil {
+		t.Fatal("reading 1500: a model was refused; want both served")
+	}
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 900, HasCredits: true, ReadAt: now.Add(5 * time.Millisecond)})
+	if executeModel(model) == nil || executeModel(otherModel) == nil {
+		t.Fatal("poll 900: a model was served; want both refused")
+	}
+	m.ObserveCredits(spent.ID, CreditReading{Balance: 1500, HasCredits: true, ReadAt: now.Add(6 * time.Millisecond)})
+
 	// A response on another model lowers the balance for every model.
 	headers := http.Header{}
 	headers.Set("X-Codex-Primary-Used-Percent", "100")

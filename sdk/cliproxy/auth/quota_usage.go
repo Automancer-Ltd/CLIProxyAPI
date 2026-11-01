@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"math"
 	"net/http"
 	"time"
 )
@@ -58,62 +57,10 @@ func (m *Manager) ObserveQuota(id string, headers http.Header, observedAt time.T
 	return true
 }
 
-// newerCreditReading returns whichever reading changed last (by UpdatedAt, then
-// ReadAt), preferring current on a tie. Credential updates (a PATCH, a refresh, a
-// save) start from an earlier copy, so they keep the manager's newer reading instead
-// of restoring the copy's.
-func newerCreditReading(incoming, current CreditReading) CreditReading {
-	if incoming.UpdatedAt.After(current.UpdatedAt) ||
-		(incoming.UpdatedAt.Equal(current.UpdatedAt) && incoming.ReadAt.After(current.ReadAt)) {
-		return incoming
-	}
-	return current
-}
-
-// versionedSnapshotLocked advances the credential's version for a quota change and
-// returns a copy to publish, so the scheduler treats an earlier in-flight snapshot
-// (a delayed MarkResult) as stale instead of letting it overwrite this one.
-func versionedSnapshotLocked(auth *Auth) *Auth {
-	auth.Generation++
-	auth.UpdatedAt = time.Now()
-	return auth.Clone()
-}
-
 // publishQuotaSnapshot hands a quota change to the scheduler, whose strategies pick
 // from their own snapshots, so the paid-credits guard sees the same figures there.
 func (m *Manager) publishQuotaSnapshot(snapshot *Auth) {
 	if m.scheduler != nil && snapshot != nil {
 		m.scheduler.upsertAuth(snapshot)
 	}
-}
-
-// ObserveCredits records a usage poll's credit reading, read at reading.ReadAt. A poll
-// no newer than the last poll is ignored. One newer than the last change replaces the
-// reading; one that overlaps a later change by traffic can only lower the balance, so
-// an older figure never reopens spending (credits_floor).
-func (m *Manager) ObserveCredits(id string, reading CreditReading) bool {
-	if m == nil || reading.ReadAt.IsZero() {
-		return false
-	}
-	m.mu.Lock()
-	auth, ok := m.auths[id]
-	if !ok || auth == nil || !reading.ReadAt.After(auth.Quota.Credits.ReadAt) {
-		m.mu.Unlock()
-		return false
-	}
-	current := auth.Quota.Credits
-	if reading.ReadAt.After(current.UpdatedAt) {
-		reading.UpdatedAt, reading.Unknown = reading.ReadAt, false
-		auth.Quota.Credits = reading
-	} else {
-		current.ReadAt = reading.ReadAt
-		current.Balance = math.Min(current.Balance, reading.Balance)
-		current.HasCredits = current.HasCredits && reading.HasCredits
-		current.Unlimited = current.Unlimited || reading.Unlimited
-		auth.Quota.Credits = current
-	}
-	snapshot := versionedSnapshotLocked(auth)
-	m.mu.Unlock()
-	m.publishQuotaSnapshot(snapshot)
-	return true
 }

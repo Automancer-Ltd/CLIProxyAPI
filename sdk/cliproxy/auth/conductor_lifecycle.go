@@ -500,7 +500,6 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			}
 		}
 	}
-	auth.Quota.Credits = newerCreditReading(auth.Quota.Credits, existing.Quota.Credits)
 	auth.UpdatedAt = now
 	cooldownStateChanged = normalizeModelStates(auth) || cooldownStateChanged
 	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
@@ -534,8 +533,6 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		return nil, false, false, fmt.Errorf("auth %s changed registration during persistence", auth.ID)
 	}
 	mergeAuthSaveDelta(auth, existingBeforeSave, existing, false)
-	// A credit reading that landed during the save is kept.
-	auth.Quota.Credits = newerCreditReading(auth.Quota.Credits, existing.Quota.Credits)
 	if (auth.RejectedAccessToken == "" && existing.RejectedAccessToken != "") || (auth.RejectedSIWCAccessToken == "" && existing.RejectedSIWCAccessToken != "") {
 		probe := auth.Clone()
 		probe.CodexRefreshPatch = refreshPatchBeforeSave
@@ -740,7 +737,6 @@ func (m *Manager) Load(ctx context.Context) error {
 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
 		auth.Generation = 1
 		if prev, exists := previousAuths[auth.ID]; exists && prev != nil {
-			auth.Quota.Credits = newerCreditReading(auth.Quota.Credits, prev.Quota.Credits)
 			auth.CredentialVersion = max(auth.CredentialVersion, prev.CredentialVersion)
 			if CredentialsChanged(prev, auth) {
 				auth.CredentialVersion++

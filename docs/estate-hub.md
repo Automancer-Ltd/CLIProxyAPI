@@ -259,7 +259,9 @@ that still has included allowance, spent or not, so consume-first uses every inc
 and the credits last.
 
 The guard starts from the usage poll's reading of `wham/usage` (`credits.balance`) and trusts it
-for 30 minutes after the read. An account with a
+for 30 minutes after the read. The hub keeps one reading per account, outside the copies of the
+account that routing and updates work on, so every routing path sees the same figure. It is held in
+memory only: after a restart the account is refused until its next poll. An account with a
 floor is polled every `interval` even while it serves traffic, so with the estate's 10 minutes a
 reading is never more than about 11 minutes old; with the refresher off, or an interval over 30
 minutes, the account is always refused. Until a newer poll, traffic only lowers the reading: a

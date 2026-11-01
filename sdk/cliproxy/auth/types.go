@@ -351,24 +351,6 @@ type QuotaState struct {
 	// Cooldown transitions must use applyCooldownFields so they cannot replace
 	// this snapshot.
 	Signals map[string]string `json:"signals,omitempty"`
-	// Credits is the credit balance the usage poll last read (Codex). The
-	// paid-credits guard trusts only this reading, and only while it is recent
-	// (credits_floor, t10647).
-	Credits CreditReading `json:"credits,omitzero"`
-}
-
-// CreditReading is an account's credit balance: read by the usage poll, then only
-// lowered by traffic until a poll that is newer than the last change.
-type CreditReading struct {
-	Balance    float64 `json:"balance"`
-	HasCredits bool    `json:"has_credits"`
-	Unlimited  bool    `json:"unlimited"`
-	// ReadAt is when the last poll read it; UpdatedAt the last change by poll or traffic.
-	ReadAt    time.Time `json:"read_at,omitzero"`
-	UpdatedAt time.Time `json:"updated_at,omitzero"`
-	// Unknown: a response was served on credits without reporting a balance, so
-	// what it cost is unknown until a newer poll.
-	Unknown bool `json:"unknown,omitempty"`
 }
 
 // Clone returns an independent copy of the quota state.
