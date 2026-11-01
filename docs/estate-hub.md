@@ -46,6 +46,12 @@ the account inventory before and after, and inspect poll errors. Executor's `hub
 reads that inventory without exposing the management key. If direct SSH from a lane device
 refuses its key, use that device's configured fleet transit route; never copy private keys.
 
+On m6 the hub itself listens on `127.0.0.1:8317`, which Tailscale serves to the tailnet as
+`https://waseems-mac-mini-m6.taild6c90e.ts.net:8317`. `127.0.0.1:8316` is `hub-forward`, which
+passes every header through to that address. m6 has no Go toolchain and no BWS wrappers. To read a
+management endpoint, run `bwrun K=AUT_HUB_MANAGEMENT_KEY` on auto-vps (`hc exec --on auto-vps`) and
+send the key to the tailnet address on stdin (`curl -H @-`), never in argv.
+
 Rollback: restore the saved executable over `~/.local/hub/cliproxyapi`, restart the same launch
 agent, and repeat the health and usage checks. The binary update does not require changing the
 hub config or credential files.
