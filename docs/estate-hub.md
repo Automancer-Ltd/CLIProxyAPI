@@ -25,7 +25,10 @@ keep their committed line endings. Boat shells can inherit `CAP_DAC_READ_SEARCH`
 permission-denial fixtures even for a non-root user. Run the tests with that capability dropped:
 `setpriv --inh-caps=-dac_read_search --ambient-caps=-dac_read_search go test ./...`.
 
-Build the deployed artifact from the verified commit, with its revision embedded:
+Build the deployed artifact from the verified commit, with its revision embedded. m6 has no Go
+toolchain: download the `go.mod` version's `darwin-arm64` archive from go.dev into the lane's scratch
+folder, check its sha256 against `https://go.dev/dl/?mode=json&include=all`, and build with
+`GOTOOLCHAIN=local` and `GOPATH`/`GOCACHE` under the same scratch folder (about 30 seconds on m6):
 
 ```bash
 revision=$(git rev-parse HEAD)
