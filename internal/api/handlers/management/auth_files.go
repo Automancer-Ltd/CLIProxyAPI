@@ -1065,6 +1065,14 @@ func authAttribute(auth *coreauth.Auth, key string) string {
 	return auth.Attributes[key]
 }
 
+// isHubStoreLogin reports a login hydrated from the shared hub store. It is
+// distinct from a hub-bound static route: ConfigureStatic marks config-synthesized
+// API-key routes with the authority but no hub account, and those never leave
+// their config identity in the listing.
+func isHubStoreLogin(auth *coreauth.Auth) bool {
+	return auth != nil && auth.HubAuthority != nil && auth.HubAccountID != ""
+}
+
 // isRuntimeOnlyAuth reports a credential that has no auth file behind it. A
 // credential hydrated from the shared hub store has no path either: it lives in
 // the encrypted store and is materialized at runtime, so the file-oriented
@@ -1073,7 +1081,7 @@ func isRuntimeOnlyAuth(auth *coreauth.Auth) bool {
 	if auth == nil {
 		return false
 	}
-	if auth.HubAuthority != nil {
+	if isHubStoreLogin(auth) {
 		return true
 	}
 	if len(auth.Attributes) == 0 {
@@ -1088,7 +1096,7 @@ func isRuntimeOnlyAuth(auth *coreauth.Auth) bool {
 // is not listed. A hub credential keeps its stored record and stays listable
 // so its controls can be read and changed.
 func isTransientRuntimeOnlyAuth(auth *coreauth.Auth) bool {
-	return isRuntimeOnlyAuth(auth) && auth.HubAuthority == nil
+	return isRuntimeOnlyAuth(auth) && !isHubStoreLogin(auth)
 }
 
 func isUnsafeAuthFileName(name string) bool {

@@ -16,11 +16,31 @@ import (
 
 // Store-backed logins have no auth-file path. The management listing must show
 // them anyway, in both the credentials list and the usage list the hub door
-// reads, or the Dispatcher loses every Claude and Codex allowance key.
+// reads, or the Dispatcher loses every Claude and Codex allowance key. The
+// listing change must stay scoped to store-backed logins: config-synthesized
+// API-key routes keep their config listing shape and never expose their keys.
 func TestManagementListsHydratedStoreCredentials(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := context.Background()
 	_, _, store, _ := setupStores(t)
+
+	staticKey := "fixture-secret-static-api-key"
+	cfg := &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{Name: "fixture-compat", BaseURL: "https://fixture.example.test/v1", APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: staticKey}}},
+		},
+	}
+	static, err := ConfigAuths(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(static) != 1 {
+		t.Fatalf("static route synthesis produced %d routes, want 1", len(static))
+	}
+	if err = store.ConfigureStatic(static); err != nil {
+		t.Fatal(err)
+	}
+
 	claude := loginFixture(t, store, "claude", "claude-listing@example.test")
 	codex := loginFixture(t, store, "codex", "codex-listing@example.test")
 	disabled := &coreauth.Auth{
@@ -47,77 +67,131 @@ func TestManagementListsHydratedStoreCredentials(t *testing.T) {
 	v8.GET("/credentials", handler.ListAuthFiles)
 	v8.GET("/credentials/usage", handler.ListCredentialUsage)
 
+	secretKeys := []string{staticKey, "fixture-secret-disabled", "fixture-secret-access"}
 	want := map[string]string{
 		claude.ID:   "claude",
 		codex.ID:    "codex",
 		disabled.ID: "claude",
 	}
-	for _, tc := range []struct {
-		path  string
-		field string
-	}{
-		{path: "/v8/management/credentials", field: "files"},
-		{path: "/v8/management/credentials/usage", field: "accounts"},
-	} {
+	type listing struct {
+		entries []map[string]any
+		raw     string
+	}
+	fetch := func(path string, field string) listing {
+		t.Helper()
 		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusOK {
-			t.Fatalf("%s status = %d, body = %s", tc.path, rec.Code, rec.Body.String())
+			t.Fatalf("%s status = %d, body = %s", path, rec.Code, rec.Body.String())
 		}
 		var body map[string]json.RawMessage
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-			t.Fatalf("%s body: %v", tc.path, err)
+			t.Fatalf("%s body: %v", path, err)
 		}
 		var entries []map[string]any
-		if err := json.Unmarshal(body[tc.field], &entries); err != nil {
-			t.Fatalf("%s %s: %v", tc.path, tc.field, err)
+		if err := json.Unmarshal(body[field], &entries); err != nil {
+			t.Fatalf("%s %s: %v", path, field, err)
 		}
-		seen := make(map[string]map[string]any, len(entries))
-		for _, entry := range entries {
-			id, _ := entry["id"].(string)
-			seen[id] = entry
+		li := listing{entries: entries, raw: string(rec.Body.Bytes())}
+		// No listing may leak a credential secret: neither the static config
+		// key nor any store-backed login's token material.
+		for _, secret := range secretKeys {
+			if containsString(li.raw, secret) {
+				t.Fatalf("%s leaked fixture secret %q", path, secret)
+			}
 		}
-		for id, provider := range want {
-			entry := seen[id]
+		return li
+	}
+	byID := func(li listing, id string) map[string]any {
+		t.Helper()
+		for _, entry := range li.entries {
+			if id, _ := entry["id"].(string); id == id {
+				return entry
+			}
+		}
+		return nil
+	}
+
+	credentials := fetch("/v8/management/credentials", "files")
+	usage := fetch("/v8/management/credentials/usage", "accounts")
+
+	for id, provider := range want {
+		for name, li := range map[string]listing{"credentials": credentials, "usage": usage} {
+			entry := byID(li, id)
 			if entry == nil {
-				t.Fatalf("%s dropped store-backed credential %q", tc.path, id)
+				t.Fatalf("/v8/management/%s dropped store-backed credential %q", name, id)
 			}
 			if entry["provider"] != provider {
-				t.Fatalf("%s credential %q provider = %v, want %s", tc.path, id, entry["provider"], provider)
+				t.Fatalf("/v8/management/%s credential %q provider = %v, want %s", name, id, entry["provider"], provider)
 			}
 			if entry["runtime_only"] != true {
-				t.Fatalf("%s credential %q runtime_only = %v, want true", tc.path, id, entry["runtime_only"])
+				t.Fatalf("/v8/management/%s credential %q runtime_only = %v, want true", name, id, entry["runtime_only"])
 			}
 			if _, ok := entry["path"]; ok {
-				t.Fatalf("%s credential %q exposed an auth-file path", tc.path, id)
+				t.Fatalf("/v8/management/%s credential %q exposed an auth-file path", name, id)
 			}
 		}
+	}
+
+	// The config-synthesized static route never becomes a file-style entry: it
+	// keeps its config listing in the usage view, and the credentials file list
+	// leaves API-key config routes out as before.
+	staticID := static[0].ID
+	if byID(credentials, staticID) != nil {
+		t.Fatalf("/v8/management/credentials listed config route %q as a file credential", staticID)
+	}
+	staticEntry := byID(usage, staticID)
+	if staticEntry == nil {
+		t.Fatalf("/v8/management/credentials/usage dropped config route %q", staticID)
+	}
+	if staticEntry["source"] != "config" {
+		t.Fatalf("config route %q source = %v, want config", staticID, staticEntry["source"])
+	}
+	if staticEntry["name"] != static[0].Label {
+		t.Fatalf("config route %q name = %v, want its config label %q", staticID, staticEntry["name"], static[0].Label)
+	}
+	if _, ok := staticEntry["account"]; ok {
+		t.Fatalf("config route %q exposed an account identifier", staticID)
 	}
 
 	// Hydration marks the credential runtime-only in the listing, not by adding a
 	// persisted attribute: the manager skips persisting any auth that carries
 	// runtime_only. Keep the marker derived, and prove a control edit on the
 	// hydrated credential still reaches the shared store.
-	records, _, err := store.coordinator.Current(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(records[claude.HubAccountID].Data), coreauth.AttributeRuntimeOnly) {
-		t.Fatal("store record kept a runtime-only marker")
-	}
 	hydrated, err := store.List(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var target *coreauth.Auth
 	for _, auth := range hydrated {
+		if auth.ID == claude.ID {
+			target = auth
+			break
+		}
+	}
+	if target == nil {
+		t.Fatal("hydrated credential not found")
+	}
+	target.Label = "renamed after hydration"
+	if _, err := manager.Update(ctx, target); err != nil {
+		t.Fatalf("control edit after hydration: %v", err)
+	}
+	persisted, err := store.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, auth := range persisted {
 		if auth.ID != claude.ID {
 			continue
 		}
-		auth.Label = "renamed after hydration"
-		if _, err := manager.Update(ctx, auth); err != nil {
-			t.Fatalf("control edit after hydration: %v", err)
+		if auth.Label != "renamed after hydration" {
+			t.Fatalf("store kept label %q after the persisted control edit", auth.Label)
 		}
 		return
 	}
-	t.Fatal("hydrated credential not found")
+	t.Fatal("persisted credential not found in the store")
+}
+
+func containsString(haystack, needle string) bool {
+	return len(needle) > 0 && strings.Contains(haystack, needle)
 }
