@@ -105,7 +105,7 @@ func TestManagementListsHydratedStoreCredentials(t *testing.T) {
 	byID := func(li listing, id string) map[string]any {
 		t.Helper()
 		for _, entry := range li.entries {
-			if id, _ := entry["id"].(string); id == id {
+			if entryID, _ := entry["id"].(string); entryID == id {
 				return entry
 			}
 		}
