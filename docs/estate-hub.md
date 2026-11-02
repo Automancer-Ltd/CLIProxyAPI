@@ -86,6 +86,48 @@ routing:
 `consume-first` also accepts `consumefirst` and `cf`. It is hot-reloaded like the other strategies.
 Everything else (holds, groups, pins) lives in the auth JSON files or the request, not in the config.
 
+## OpenCode Go and the other API-key upstreams
+
+OAuth subscriptions live as credential files under `~/.cli-proxy-api`. API-key subscriptions live
+in `~/.local/hub/config.yaml` under `api-keys.openai-compatibility`, one group per service. The
+OpenCode Go plan is the `opencode-go` group: `base-url: https://opencode.ai/zen/go/v1`, the group
+header `x-opencode-session: estate-hub`, and one `api-key`. It serves these ids:
+
+| Upstream model | Hub id |
+| --- | --- |
+| `omen-alpha` | `omen-alpha` |
+| `kimi-k3.1-pro` | `kimi-k3.1-pro` |
+| `glm-5.3` | `glm-5.3` |
+| `glm-5.3-flash` | `glm-5.3-flash-oc` |
+| `deepseek-v4.1-flash` | `deepseek-v4.1-flash` |
+| `beam-free` | `beam-free` |
+
+`glm-5.3-flash-oc` is the OpenCode Go copy: the `zai` group already serves `glm-5.3-flash`, and
+one id can map to only one upstream. A hub id must not contain a slash when a harness prefixes it
+with a provider name: `opencode run -m <provider>/<id>` splits at the slash, so an id like
+`opencode-go/glm-5.3-flash` reaches opencode as a model it cannot resolve. Keep hub ids
+slash-free. The `opencode-go` models spend the OpenCode Go plan's own allowance; `beam-free` is
+free and mechanical-only in the routing table.
+
+### Rotating the OpenCode Go key
+
+`AUT_OPENCODE_GO_API_KEY` in BWS is the estate's source of truth for the key. The hub keeps its
+own copy in the config, so a rotation must update both; updating BWS alone does not change what
+`allowances` reads.
+
+1. Create the new key on opencode.ai and put it in BWS as `AUT_OPENCODE_GO_API_KEY`. Keep it out
+   of chat, notes, logs and command arguments.
+2. On m6, back up the config:
+   `cp -p ~/.local/hub/config.yaml ~/.local/hub/config.yaml.pre-<change>-$(date -u +%Y%m%dT%H%M%SZ)`.
+3. Replace the `api-key` under the `opencode-go` group only. Leave the base URL, the
+   `x-opencode-session` header and the model list alone.
+4. Check that the file parses, then let the watcher reload it (or restart with
+   `launchctl kickstart -k gui/$(id -u)/uk.automancer.hub`).
+5. Read `/healthz`, `/hub` and `/v1/models`, and make one short completion against one of the
+   ids. The usage refresher reads `GET opencode.ai/zen/go/v1/usage` with the same key, so a wrong
+   key shows as a poll error on `/hub`.
+6. Rollback: restore the backup, reload, and repeat the health and usage reads.
+
 ## How consume-first ranks accounts
 
 The proxy already records the quota headers each account returned on its last response
