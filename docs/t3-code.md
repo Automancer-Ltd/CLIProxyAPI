@@ -16,11 +16,20 @@ started with `t3 thread start . "Reply with the single word pong" --provider <id
 | Server | user unit `t3code.service`, `http://127.0.0.1:3773`; tailnet `https://automancer-vps.taild6c90e.ts.net:3773` (Tailscale Serve) |
 | T3 home | `~/.t3` (settings `~/.t3/userdata/settings.json`; secrets in T3's own secret store, never in that file) |
 | Provider config dirs | `~/.config/t3-hub/{claude,codex,pi,opencode}` (mode 700; no keys in them) |
-| Settings as code | [estate-hub-devices/t3-hub-instances.mjs](estate-hub-devices/t3-hub-instances.mjs): writes every instance, the defaults and the hub usage source; its header has the run command |
+| Settings as code | [estate-hub-devices/t3-hub-instances.mjs](estate-hub-devices/t3-hub-instances.mjs): writes every instance, the defaults and the hub usage source; its header has the dry-run and run commands |
 | Hub keys | BWS `AUT_HUB_ACCESS_KEY` (instances, as sensitive env vars), `AUT_HUB_MANAGEMENT_KEY` (T3's usage panel) |
 
 The script is the source of truth. A `providerInstances` write replaces the whole map, so edit the
-script and rerun it rather than changing one instance through the API.
+script and rerun it rather than changing one instance through the API. The script reads the live map
+from `~/.t3/userdata/settings.json` and writes its own instances over it, so an instance added in the
+app and not yet listed in the script is kept, not deleted (t14159). List such an instance in the script.
+
+Run `node docs/estate-hub-devices/t3-hub-instances.mjs --dry-run` on auto-vps first. It needs no keys
+and writes nothing. It prints which instances the run would add, change, leave unchanged, keep
+unlisted, and remove; `removed` is always empty. Every instance listed as changed is replaced when the
+script runs. On 2 Nov 2026, with the PATH that `claude-hub` already holds, it reported all 12 instances
+unchanged. From a plain login shell it reported `claude-hub` changed, because the shell's PATH differs
+from the PATH that `t3 serve` started with.
 
 The Claude instance starts with `USE_BUILTIN_RIPGREP=0` and a full PATH with
 `/opt/automancer/bin/agent-shims` first. The generator takes the remaining PATH
@@ -32,9 +41,9 @@ settings and hooks load. Installation and synthetic verification are in
 
 Changing a provider instance can close its previous scope. Before rerunning the
 generator or changing `claude-hub.environment`, check the installed T3 version's
-lifecycle and ensure no Claude sessions can be interrupted. Preserve the live
-settings and avoid overwriting newer instance changes with this generator's
-whole map. A settings write is not proof that a new Claude launch uses the shim.
+lifecycle and ensure no Claude sessions can be interrupted. The generator still
+overwrites every instance it lists, so copy newer app changes to those instances
+into the script first. A settings write is not proof that a new Claude launch uses the shim.
 
 ## Instances
 
@@ -48,6 +57,7 @@ whole map. A settings write is not proof that a new Claude launch uses the shim.
 | `grok` | Grok | its own login (`grok login` on auto-vps); Grok also covers the Cursor models, so there is no Cursor instance | `t3` lists them |
 | `muse` | Muse Code | its own login (`muse login` on auto-vps) | Wonder, Wonder Full, Spark |
 | `antigravity` | Antigravity | T3's managed Antigravity runtime and its own Google sign-in (not the `agy` CLI's login) | listed after sign-in |
+| `acpRegistry_devin` | Devin | ACP Registry agent `devin` (distribution `auto`) talking to Cognition's servers, not the hub; added in the app and found enabled on 2 Nov 2026 | listed by the agent |
 
 The built-in `claudeAgent`, `codex` and `cursor` instances are switched off. The Claude and Codex
 config dirs link back to Waseem's instructions, skills, hooks and plugins in `~/.claude` and
