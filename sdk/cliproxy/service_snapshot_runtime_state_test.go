@@ -32,6 +32,7 @@ func TestHandleAuthUpdatesFileSnapshotKeepsCooldown(t *testing.T) {
 				t.Fatal(errBuild)
 			}
 			id := "cooldown.json"
+			t.Cleanup(func() { GlobalModelRegistry().UnregisterClient(id) })
 			path := filepath.Join(dir, id)
 			raw := `{"type":"claude","email":"a@b.c"}`
 			read := func() *coreauth.Auth {
@@ -99,6 +100,7 @@ func TestHandleAuthUpdatesDiscardedSnapshotTriggersWatcherReread(t *testing.T) {
 	}
 
 	id := "acct.json"
+	t.Cleanup(func() { GlobalModelRegistry().UnregisterClient(id) })
 	path := filepath.Join(dir, id)
 	initial := `{"type":"codex","email":"a@b.c","prefix":"pfx-0"}`
 	edit := `{"type":"codex","email":"a@b.c","prefix":"pfx-1"}`
