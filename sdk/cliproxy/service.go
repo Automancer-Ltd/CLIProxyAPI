@@ -28,6 +28,7 @@ import (
 // and integration with various AI service providers.
 type Service struct {
 	hubCoordinator *hubauth.Coordinator
+	hubStore       *hubauth.Store
 	hubDone        chan struct{}
 	// cfg holds the current application configuration.
 	cfg *config.Config

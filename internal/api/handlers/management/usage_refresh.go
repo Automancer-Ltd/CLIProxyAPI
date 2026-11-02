@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -166,6 +167,17 @@ func (h *Handler) pollUsage(ctx context.Context, auth *coreauth.Auth, fetch usag
 	ctx, cancel := context.WithTimeout(ctx, defaultAPICallTimeout)
 	defer cancel()
 	record.AttemptedAt = now
+	if auth.HubAuthority != nil && auth.Provider == "meta" {
+		updated, err := h.authManager.ForceRefreshAuth(ctx, auth.ID)
+		if err != nil || updated == nil {
+			record.Error = "hub Meta usage refresh unavailable"
+			return record
+		}
+		raw, _ := json.Marshal(map[string]any{"subs_tier_name": updated.Metadata["subs_tier_name"], "subs_usage": updated.Metadata["subs_usage"]})
+		result := parseMetaUsage(gjson.ParseBytes(raw))
+		record.Plan, record.Windows, record.FetchedAt, record.Error = result.plan, result.windows, now, ""
+		return record
+	}
 	token, errToken := h.usageToken(ctx, auth)
 	if errToken == nil && token == "" {
 		errToken = errors.New("no token on the credential")

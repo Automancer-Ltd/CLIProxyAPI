@@ -20,6 +20,7 @@ import (
 type Store struct {
 	coordinator *Coordinator
 	saves       sync.Mutex
+	static      map[string]*coreauth.Auth
 }
 
 func NewStore(c *Coordinator) *Store {
@@ -27,13 +28,14 @@ func NewStore(c *Coordinator) *Store {
 	return &Store{coordinator: c}
 }
 
-// This is a closed set of user controls, not a list of token names to exclude.
+// This is a closed set of user controls and native catalog observations, not a list of token names to exclude.
 // Everything else, including unknown and nested provider fields, is grant data.
 var controlKeys = map[string]bool{
 	"hold_until": true, "group": true, "pin_only": true, "allow_credits": true,
 	"disabled": true, "prefix": true, "proxy_url": true, "label": true,
 	"note": true, "user_note": true, "priority": true, "weight": true,
 	"request_retry": true, "disable_cooling": true,
+	"antigravity_capability_hints": true,
 }
 
 type storedCredential struct {
@@ -74,12 +76,12 @@ func grantBytes(a storedCredential) []byte {
 	metadata := make(map[string]any)
 	attrs := make(map[string]string)
 	for k, v := range a.Metadata {
-		if !controlKeys[k] {
+		if !controlKeys[k] && !(a.Provider == "devin" && devinStatusKeys[k]) {
 			metadata[k] = v
 		}
 	}
 	for k, v := range a.Attributes {
-		if !controlKeys[k] {
+		if !controlKeys[k] && !(a.Provider == "devin" && devinStatusKeys[k]) {
 			attrs[k] = v
 		}
 	}
@@ -130,9 +132,15 @@ func (s *Store) materialize(id string, r Record, a Account) (*coreauth.Auth, err
 		return nil, err
 	}
 	out := &coreauth.Auth{ID: data.ID, Provider: data.Provider, Metadata: data.Metadata, Attributes: data.Attributes, Label: data.Label, Prefix: data.Prefix, ProxyURL: data.ProxyURL, Disabled: data.Disabled, Status: coreauth.StatusActive, HubAccountID: id, HubGeneration: a.Generation, HubBaseline: bytes.Clone(r.Data), HubAuthority: s}
+	if err := ValidateCredential(out); err != nil {
+		return nil, err
+	}
 	if a.Status != "active" || a.Quarantined {
 		out.Disabled = true
 		out.Status = coreauth.StatusDisabled
+	}
+	if s.static[out.ID] != nil {
+		return nil, errors.New("hub snapshot collides with a configured static route")
 	}
 	out.EnsureIndex()
 	return out, nil
@@ -142,7 +150,10 @@ func (s *Store) List(ctx context.Context) ([]*coreauth.Auth, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]*coreauth.Auth, 0, len(records))
+	out := make([]*coreauth.Auth, 0, len(records)+len(s.static))
+	for _, a := range s.static {
+		out = append(out, a.Clone())
+	}
 	for id, r := range records {
 		a := accounts[id]
 		if a.Status == "removed" {
@@ -157,11 +168,17 @@ func (s *Store) List(ctx context.Context) ([]*coreauth.Auth, error) {
 	return out, nil
 }
 func (s *Store) Authorize(ctx context.Context, a *coreauth.Auth) error {
+	if a != nil && s.static[a.ID] != nil {
+		if !s.sameStatic(a) {
+			return ErrUnavailable
+		}
+		return s.coordinator.AuthorizeProcess(ctx)
+	}
 	if a == nil || a.HubAuthority != s || a.HubAccountID == "" || a.HubGeneration < 1 {
 		return ErrUnavailable
 	}
-	if a.Provider != "claude" && a.Provider != "codex" {
-		return errors.New("hub provider path is not enrolled")
+	if err := ValidateCredential(a); err != nil {
+		return err
 	}
 	if a.Provider == "codex" {
 		if siwc, ok := a.Metadata["siwc"].(map[string]any); ok && len(siwc) > 0 {
@@ -207,6 +224,12 @@ func (s *Store) Refresh(ctx context.Context, a *coreauth.Auth, provider func(con
 	if err := s.Authorize(ctx, a); err != nil {
 		return nil, err
 	}
+	if s.static[a.ID] != nil {
+		return a.Clone(), nil
+	}
+	if a.Provider == "devin" {
+		return s.refreshStatus(ctx, a, provider)
+	}
 	r, err := s.coordinator.Refresh(ctx, a.HubAccountID, a.HubGeneration, func(inner context.Context, data json.RawMessage) (json.RawMessage, error) {
 		base, err := s.materialize(a.HubAccountID, Record{Generation: a.HubGeneration, Data: data}, Account{Generation: a.HubGeneration, Status: "active"})
 		if err != nil {
@@ -240,6 +263,12 @@ func (s *Store) Refresh(ctx context.Context, a *coreauth.Auth, provider func(con
 }
 
 func (s *Store) Save(ctx context.Context, a *coreauth.Auth) (string, error) {
+	if a != nil && s.static[a.ID] != nil {
+		if !s.sameStatic(a) || coreauth.HasAuthCreationIntent(ctx) {
+			return "", errors.New("hub static route is owned by startup configuration")
+		}
+		return "config:" + a.ID, nil
+	}
 	raw, err := encodeCredential(a)
 	if err != nil {
 		return "", err
@@ -275,8 +304,8 @@ func (s *Store) Save(ctx context.Context, a *coreauth.Auth) (string, error) {
 		}
 	}
 	if coreauth.HasAuthCreationIntent(ctx) {
-		if requested.Provider != "claude" && requested.Provider != "codex" {
-			return "", errors.New("hub login provider is not enrolled")
+		if err := ValidateCredential(a); err != nil {
+			return "", err
 		}
 		if id == "" {
 			id = uuid.NewString()
@@ -429,18 +458,35 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 }
 
 func sharedRefreshGrant(a, b storedCredential) bool {
-	// Provider enrollment is explicit. Both enrolled single-grant formats use
-	// refresh_token (Claude also accepts refreshToken); compare both spellings.
-	for _, left := range []string{"refresh_token", "refreshToken"} {
-		value, _ := a.Metadata[left].(string)
-		if value == "" {
-			continue
-		}
-		for _, right := range []string{"refresh_token", "refreshToken"} {
-			if value == b.Metadata[right] {
-				return true
-			}
+	left := refreshGrants(a)
+	for value := range refreshGrants(b) {
+		if left[value] {
+			return true
 		}
 	}
 	return false
+}
+
+// Compare every native spelling of the actual reusable grant. In particular,
+// legacy Meta DCA and Devin session logins may use access_token and api_key.
+func refreshGrants(a storedCredential) map[string]bool {
+	out := map[string]bool{}
+	keys := []string{"refresh_token", "refreshToken", "dca_token", "session_token"}
+	if a.Provider == "devin" {
+		keys = append(keys, "api_key")
+	}
+	for _, key := range keys {
+		if value := stringField(a.Metadata, key); value != "" {
+			out[value] = true
+		}
+		if value := strings.TrimSpace(a.Attributes[key]); value != "" {
+			out[value] = true
+		}
+	}
+	if a.Provider == "meta" {
+		if value := stringField(a.Metadata, "access_token"); strings.HasPrefix(value, "dca:") {
+			out[value] = true
+		}
+	}
+	return out
 }

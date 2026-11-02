@@ -39,6 +39,11 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	guardedDial, err := cliproxyauth.GuardHubDial(ctx, auth, dialer.NetDialContext)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	dialer.NetDialContext = guardedDial
 	conn, resp, err := dialer.DialContext(ctx, wsURL, headers)
 	if err != nil {
 		cliproxyexecutor.MarkUpstreamAttempt(ctx)
@@ -192,7 +197,15 @@ func frameCodexWebsocketRequestBody(body []byte) []byte {
 	return body
 }
 
-func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, readCh chan codexWebsocketRead) (int, []byte, error) {
+func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, readCh chan codexWebsocketRead) (kind int, data []byte, err error) {
+	defer func() {
+		if conn != nil && err == nil {
+			if denied := cliproxyauth.CheckHubConn(conn.UnderlyingConn()); denied != nil {
+				kind, data, err = 0, nil, denied
+			}
+		}
+	}()
+
 	if sess == nil {
 		if conn == nil {
 			return 0, nil, fmt.Errorf("codex websockets executor: websocket conn is nil")

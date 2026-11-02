@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 )
 
 var ErrUnavailable = errors.New("hub credential authority unavailable")
@@ -348,7 +348,19 @@ func (c *Coordinator) Current(ctx context.Context) (map[string]Record, map[strin
 	return records, accounts, nil
 }
 
+// AuthorizeProcess checks live ownership/hydration for immutable config routes.
+// It shares the lock-free steady read with OAuth serving, without inventing an account.
+func (c *Coordinator) AuthorizeProcess(ctx context.Context) error {
+	_, err := c.authorize(ctx, "", 0)
+	return err
+}
 func (c *Coordinator) Authorize(ctx context.Context, id string, generation int64) (Record, error) {
+	if id == "" {
+		return Record{}, ErrUnavailable
+	}
+	return c.authorize(ctx, id, generation)
+}
+func (c *Coordinator) authorize(ctx context.Context, id string, generation int64) (Record, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		// Do not hold the mutation mutex over this read. A delayed reply for one
 		// request cannot stall another account or local scheduler accounting.
@@ -380,6 +392,12 @@ func (c *Coordinator) Authorize(ctx context.Context, id string, generation int64
 		now := c.now()
 		if ttlMS <= 1000 || !now.Before(start.Add(time.Duration(ttlMS)*time.Millisecond-time.Second)) || !now.Before(v.deadline) || !o.Live || !o.CanServe || o.Phase != "serving" || o.Host != v.fence.Host || o.InstanceID != v.fence.InstanceID || o.Epoch != v.fence.Epoch || o.HydratedRevision == nil || *o.HydratedRevision != v.head.Revision {
 			return Record{}, ErrUnavailable
+		}
+		if id == "" {
+			if c.view.Load() != v {
+				return Record{}, ErrUnavailable
+			}
+			return Record{}, nil
 		}
 		a, ok := v.accounts[id]
 		if !ok || a.Status != "active" || a.Generation != generation {

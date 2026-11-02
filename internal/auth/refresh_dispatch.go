@@ -33,3 +33,27 @@ func GuardRefreshDispatch(base http.RoundTripper) http.RoundTripper {
 	}
 	return refreshDispatchTransport{base}
 }
+
+// HasRefreshDispatch identifies a refresh already enrolled in shared authority.
+func HasRefreshDispatch(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	_, ok := ctx.Value(refreshDispatchKey{}).(func(context.Context) error)
+	return ok
+}
+
+// RefreshClient leaves ordinary login behavior intact. For an enrolled refresh,
+// the final transport consumes one permission, with redirects disabled.
+func RefreshClient(ctx context.Context, original *http.Client) *http.Client {
+	if !HasRefreshDispatch(ctx) {
+		return original
+	}
+	client := *original
+	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+		client.Transport = rt
+	}
+	client.Transport = GuardRefreshDispatch(client.Transport)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &client
+}

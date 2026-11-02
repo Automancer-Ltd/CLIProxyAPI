@@ -141,6 +141,9 @@ func (e *DevinExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 
 // Refresh updates Devin user status, plan, and quota signals.
 func (e *DevinExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if refreshed, handled, err := cliproxyauth.RunHubRefresh(ctx, auth, e.Refresh); handled {
+		return refreshed, err
+	}
 	if auth == nil {
 		return nil, errors.New("devin executor: auth is nil")
 	}

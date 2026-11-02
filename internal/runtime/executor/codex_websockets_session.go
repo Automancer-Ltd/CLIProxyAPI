@@ -710,6 +710,11 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 }
 
 func (e *CodexWebsocketsExecutor) ensureUpstreamConnWithSIWC(ctx context.Context, auth *cliproxyauth.Auth, sess *codexWebsocketSession, authID string, wsURL string, headers http.Header, useSIWC bool) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
+	if auth != nil && auth.HubAuthority != nil {
+		if err := auth.HubAuthority.Authorize(ctx, auth); err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	if sess == nil {
 		conn, closer, resp, err := e.dialCodexWebsocket(ctx, auth, wsURL, headers)
 		if conn != nil {
@@ -737,6 +742,10 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConnWithSIWC(ctx context.Context
 	readerConn := sess.readerConn
 	sess.connMu.Unlock()
 	if conn != nil {
+		if err := cliproxyauth.CheckHubConn(conn.UnderlyingConn()); err != nil {
+			e.invalidateUpstreamConn(sess, conn, "hub_authority_lost", err)
+			return nil, nil, nil, err
+		}
 		if readerConn != conn {
 			sess.connMu.Lock()
 			sess.readerConn = conn
@@ -793,6 +802,9 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(codexResponsesWebsocketIdleTimeout))
 		msgType, payload, errRead := conn.ReadMessage()
+		if errRead == nil {
+			errRead = cliproxyauth.CheckHubConn(conn.UnderlyingConn())
+		}
 		if errRead != nil {
 			sess.connMu.Lock()
 			recoverTransport := sess.recoverTransport
