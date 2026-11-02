@@ -241,7 +241,15 @@ generation change or takeover before the next frame. Separate regressions cover 
 permanent socket failure, reacquired epochs, and downstream WebSocket clients whose upstream remains HTTP.
 The new provider and buffered-frame tests fail on foundation merge `fc067016`; all endpoints and grants are synthetic.
 
-Local final validation passed on m6: the full hub authority suite with `-race`, the buffered Codex transport checks
+Independent review of `7dfd804586d1` found that the generic HTTP helper's hub wrapper hid the Antigravity
+transport before native pool selection. The corrected path selects the transport with an unbound clone and
+adds one guard around the final credential-scoped pool. `TestAntigravityHubHttpRequestPreservesNativeTransport`
+reproduces the failure on that head through public `HttpRequest` calls to a synthetic TLS server offering HTTP/2:
+both default and context transports advertised ALPN, used HTTP/2, shared a connection across credentials and
+authorized twice per dispatch. It requires native TLS 1.3/HTTP/1.1 without ALPN, same-credential connection reuse,
+separate connections across credentials, one authorization per dispatch and zero sends after ownership loss.
+
+Initial coverage validation passed on m6: the full hub authority suite with `-race`, the buffered Codex transport checks
 with `-race`, both server/preflight builds, vet and tests for every changed Go package. The standalone preflight
 returned the expected synthetic provider/mode/count and left its config/auth inputs byte-for-byte unchanged.
 Read t13262 for the exact final-head CI and independent authentication review. Coverage is

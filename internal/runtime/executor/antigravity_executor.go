@@ -453,7 +453,15 @@ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cli
 		// context transport fallback, preserving the previous behavior.
 	}
 
-	client := helps.NewProxyAwareHTTPClient(httptransport.WithoutDecorator(ctx), cfg, auth, timeout)
+	// Select the native transport before adding the single outer hub guard. A
+	// guard from the generic helper would hide *http.Transport and skip HTTP/1.1
+	// and credential-scoped pooling below. Keep the original auth bound.
+	transportAuth := auth
+	if auth != nil && auth.HubAuthority != nil {
+		transportAuth = auth.Clone()
+		transportAuth.HubAuthority = nil
+	}
+	client := helps.NewProxyAwareHTTPClient(httptransport.WithoutDecorator(ctx), cfg, transportAuth, timeout)
 	// Direct requests share an HTTP/1.1 pool only within the selected credential.
 	if client.Transport == nil {
 		client.Transport = antigravityHTTP11Transport(auth, antigravityBaseTransport, cfg)
