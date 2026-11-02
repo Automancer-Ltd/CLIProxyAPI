@@ -54,6 +54,12 @@ not enrolled. The builder/preflight, shared management handlers and direct xAI W
 paths before provider effects. Codex downstream WebSocket capability is preserved: downstream transport alone
 does not force upstream WebSockets. This work does not alter any client transport setting.
 
+The server also checks its local plugin bootstrap configuration before entering guarded mode. With a Postgres,
+object or Git config store, disable plugins in both the local `--config` file and the stored config, then restart.
+Native plugin code stays mapped for the process lifetime; disabling plugins in the final config cannot make an
+already-loaded process safe for shared authority. `TestServerHubAuthorityStartup` exercises the compiled server
+with local and Git-backed synthetic configurations, including this mismatch.
+
 ### Read-only activation preflight
 
 Build `go build -o /PATH/hub-preflight ./cmd/hub-preflight` from the reviewed commit. On each intended host run:

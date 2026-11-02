@@ -192,8 +192,10 @@ func main() {
 	}
 
 	pluginHost := pluginhost.New()
+	bootstrapPluginsEnabled := false
 	if !isDiscoverMode {
 		if bootstrapCfg := loadPluginBootstrapConfig(pluginBootstrapConfigPath(os.Args[1:], DefaultConfigPath)); bootstrapCfg != nil {
+			bootstrapPluginsEnabled = bootstrapCfg.Plugins.Enabled
 			pluginHost.ApplyConfig(context.Background(), bootstrapCfg)
 			pluginHost.RegisterCommandLineFlags(context.Background(), flag.CommandLine)
 		}
@@ -658,6 +660,11 @@ func main() {
 		CallbackPort: oauthCallbackPort,
 	}
 
+	serviceHost, errPluginHost := servicePluginHost(cfg, pluginHost, bootstrapPluginsEnabled)
+	if errPluginHost != nil {
+		log.Error(errPluginHost)
+		return
+	}
 	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || xaiLogin || devinLogin || metaLogin
 	if cfg.HubAuthority != nil && commandMode {
 		log.Error("shared hub logins must use the active hub management API")
@@ -790,7 +797,7 @@ func main() {
 					password = localMgmtPassword
 				}
 
-				cancel, done := cmd.StartServiceBackgroundWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
+				cancel, done := cmd.StartServiceBackgroundWithPluginHost(cfg, configFilePath, password, serviceHost, serverOptions...)
 
 				client := tui.NewClient(cfg.Port, password)
 				ready := false
@@ -836,9 +843,24 @@ func main() {
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
 			misc.StartAntigravityVersionUpdater(context.Background())
 			registry.SetLocalModelCatalogs(localModel)
-			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
+			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, serviceHost, serverOptions...)
 		}
 	}
+}
+
+// servicePluginHost returns the plugin host the proxy service may run with.
+// Only an unused bootstrap host may be dropped for guarded mode. Plugins loaded
+// from the local config stay mapped even if a store's final config disables them.
+// Check the original enabled flag, not the host's current snapshot: failed or
+// detached plugins can also leave native code in the process.
+func servicePluginHost(cfg *config.Config, host *pluginhost.Host, bootstrapPluginsEnabled bool) (*pluginhost.Host, error) {
+	if cfg != nil && cfg.HubAuthority != nil {
+		if bootstrapPluginsEnabled || cfg.Plugins.Enabled || cfg.Home.Enabled {
+			return nil, fmt.Errorf("shared hub authority cannot run Home or dynamic plugins (including startup plugins)")
+		}
+		return nil, nil
+	}
+	return host, nil
 }
 
 // resolveManagementBaseURL determines the management API base URL for TUI client mode.
