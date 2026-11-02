@@ -376,6 +376,57 @@ func (c *Coordinator) Authorize(ctx context.Context, id string, generation int64
 	}
 	return c.authorize(ctx, id, generation)
 }
+
+// checkSession keeps stable frames local. A missing or concurrently replaced
+// view can be a publication gap from an unrelated account's commit, not lost
+// authority. Join that mutation and rehydrate once before deciding. The mutex
+// coalesces concurrent readers; no stale view authorizes a frame during the gap.
+func (c *Coordinator) checkSession(ctx context.Context, fence Fence, id string, generation int64, baseline []byte) error {
+	check := func(v *authorizationView) error {
+		if v == nil || v.fence != fence || !c.now().Before(v.deadline) {
+			return ErrUnavailable
+		}
+		if id != "" {
+			a, ok := v.accounts[id]
+			if !ok || a.Status != "active" || a.Generation != generation {
+				return ErrUnavailable
+			}
+			if a.Quarantined {
+				return ErrQuarantined
+			}
+			r := v.records[id]
+			if r.Generation != generation || !bytes.Equal(r.Data, baseline) {
+				return ErrUnavailable
+			}
+		}
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if v := c.view.Load(); v != nil {
+		err := check(v)
+		if c.view.Load() == v {
+			return err
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// A real loss must not be repaired by acquiring a later process epoch.
+	if c.fence != fence || !c.owned() || c.state.Ownership.Phase == "draining" {
+		return ErrUnavailable
+	}
+	if c.view.Load() == nil {
+		if err := c.sync(ctx); err != nil {
+			return err
+		}
+	}
+	return check(c.view.Load())
+}
+
 func (c *Coordinator) authorize(ctx context.Context, id string, generation int64) (Record, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		// Do not hold the mutation mutex over this read. A delayed reply for one

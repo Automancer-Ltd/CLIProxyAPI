@@ -173,10 +173,10 @@ func (s *Store) refreshStatus(ctx context.Context, a *coreauth.Auth, provider fu
 	return out, nil
 }
 
-// OpenHubSession admits a connection with live authority, then returns an I/O-free
-// frame check against the locally hydrated view and its conservative lease deadline.
-// New user turns require Authorize again; frames never wait for Tracker. The
-// captured process fence and account baseline cannot adopt a later grant or epoch.
+// OpenHubSession admits a connection with live authority. Stable frames check
+// local hydration and its conservative lease deadline; publication gaps join a
+// synchronized rehydration. New user turns require Authorize again. The captured
+// process fence and account baseline cannot adopt a later grant or epoch.
 func (s *Store) OpenHubSession(ctx context.Context, a *coreauth.Auth) (func(context.Context) error, error) {
 	a = a.Clone()
 	if err := s.Authorize(ctx, a); err != nil {
@@ -187,34 +187,11 @@ func (s *Store) OpenHubSession(ctx context.Context, a *coreauth.Auth) (func(cont
 		return nil, ErrUnavailable
 	}
 	fence := view.fence
+	id := a.HubAccountID
+	if s.static[a.ID] != nil {
+		id = ""
+	}
 	return func(callCtx context.Context) error {
-		if err := callCtx.Err(); err != nil {
-			return err
-		}
-		for attempt := 0; attempt < 2; attempt++ {
-			current := s.coordinator.view.Load()
-			if current == nil || current.fence != fence || !s.coordinator.now().Before(current.deadline) {
-				return ErrUnavailable
-			}
-			if s.static[a.ID] == nil {
-				account, ok := current.accounts[a.HubAccountID]
-				if !ok || account.Status != "active" || account.Generation != a.HubGeneration {
-					return ErrUnavailable
-				}
-				if account.Quarantined {
-					return ErrQuarantined
-				}
-				record := current.records[a.HubAccountID]
-				if record.Generation != a.HubGeneration || !bytes.Equal(record.Data, a.HubBaseline) {
-					return ErrUnavailable
-				}
-			}
-			if s.coordinator.view.Load() == current {
-				return nil
-			}
-			// A concurrent heartbeat can replace an equivalent view. Recheck it
-			// locally; a lost fence, changed account or expired lease still refuses.
-		}
-		return ErrUnavailable
+		return s.coordinator.checkSession(callCtx, fence, id, a.HubGeneration, a.HubBaseline)
 	}, nil
 }
