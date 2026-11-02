@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -357,6 +358,9 @@ func (a *XAIAuth) RefreshTokens(ctx context.Context, refreshToken, tokenEndpoint
 	}
 	tokenEndpoint = strings.TrimSpace(tokenEndpoint)
 
+	if baseauth.HasRefreshDispatch(ctx) {
+		return a.refreshTokensSingleFlight(ctx, refreshToken, tokenEndpoint)
+	}
 	result, err, _ := xaiRefreshGroup.Do(refreshToken, func() (interface{}, error) {
 		return a.refreshTokensSingleFlight(context.WithoutCancel(ctx), refreshToken, tokenEndpoint)
 	})
@@ -389,7 +393,7 @@ func (a *XAIAuth) postTokenForm(ctx context.Context, tokenEndpoint string, form 
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := a.httpClient.Do(req)
+	resp, err := baseauth.RefreshClient(ctx, a.httpClient).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("xai token request failed: %w", err)
 	}
@@ -416,6 +420,9 @@ func (a *XAIAuth) postTokenForm(ctx context.Context, tokenEndpoint string, form 
 		return nil, fmt.Errorf("xai token response: parse body: %w", err)
 	}
 	if strings.TrimSpace(payload.AccessToken) == "" {
+		if baseauth.HasRefreshDispatch(ctx) {
+			return buildTokenData(payload.AccessToken, payload.RefreshToken, payload.IDToken, payload.TokenType, payload.ExpiresIn, "", ""), fmt.Errorf("xai token response missing access_token")
+		}
 		return nil, fmt.Errorf("xai token response missing access_token")
 	}
 	email, subject := parseJWTIdentity(payload.IDToken)

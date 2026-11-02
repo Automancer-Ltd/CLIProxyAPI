@@ -3,11 +3,11 @@ package cliproxy
 import (
 	"context"
 	"errors"
-	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/hubauth"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
@@ -19,8 +19,9 @@ func (s *Service) startHub(ctx context.Context, cfg *config.Config) error {
 	if h == nil {
 		return nil
 	}
-	if cfg.Home.Enabled || cfg.Plugins.Enabled {
-		return errors.New("hub authority and Home cannot be combined")
+	static, err := hubauth.ConfigAuths(cfg)
+	if err != nil {
+		return err
 	}
 	if s.coreManager == nil {
 		return errors.New("hub authority requires the core manager")
@@ -42,7 +43,11 @@ func (s *Service) startHub(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 	store := hubauth.NewStore(coordinator)
+	if err = store.ConfigureStatic(static); err != nil {
+		return err
+	}
 	s.hubCoordinator = coordinator
+	s.hubStore = store
 	s.serverOptions = append(s.serverOptions, api.WithMiddleware(s.hubMiddleware()))
 	s.coreManager.SetStore(store)
 	sdkAuth.RegisterTokenStore(store)
@@ -80,9 +85,6 @@ func (s *Service) syncHub(ctx context.Context) {
 		return
 	}
 	for _, a := range s.coreManager.List() {
-		if a.Provider != "claude" && a.Provider != "codex" {
-			continue
-		}
 		s.ensureExecutorsForAuthWithContext(ctx, a, false)
 		s.completeModelRegistrationForAuth(ctx, a)
 	}
@@ -95,7 +97,7 @@ func (s *Service) hubMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
 		if path == "/hub/ready" {
-			_, _, err := s.hubCoordinator.Current(c.Request.Context())
+			_, err := s.hubStore.List(c.Request.Context())
 			if err != nil {
 				c.AbortWithStatusJSON(503, gin.H{"serving": false})
 				return
@@ -109,7 +111,7 @@ func (s *Service) hubMiddleware() gin.HandlerFunc {
 		}
 		// Encrypted CRUD and OAuth login may only be initiated by the current owner.
 		if strings.HasPrefix(path, "/v8/management/") {
-			if _, _, err := s.hubCoordinator.Current(c.Request.Context()); err != nil {
+			if _, err := s.hubStore.List(c.Request.Context()); err != nil {
 				c.AbortWithStatusJSON(503, gin.H{"error": "hub authority unavailable"})
 				return
 			}

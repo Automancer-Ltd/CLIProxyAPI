@@ -438,7 +438,10 @@ func antigravityCredentialScope(prefix, secret string) string {
 // The underlying Transport is always shared so keep-alive connections survive across
 // requests instead of forcing a fresh TCP + TLS handshake every time.
 func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) (clientOut *http.Client) {
-	defer func() { clientOut = httptransport.Decorate(ctx, clientOut) }()
+	defer func() {
+		clientOut.Transport = cliproxyauth.GuardHubTransport(clientOut.Transport, auth)
+		clientOut = httptransport.Decorate(ctx, clientOut)
+	}()
 	// Native Antigravity reuses one transport across requests. Opt into a
 	// credential-scoped proxy transport only here so other providers keep their
 	// existing lifecycle and different OAuth identities remain isolated.
@@ -450,7 +453,15 @@ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cli
 		// context transport fallback, preserving the previous behavior.
 	}
 
-	client := helps.NewProxyAwareHTTPClient(httptransport.WithoutDecorator(ctx), cfg, auth, timeout)
+	// Select the native transport before adding the single outer hub guard. A
+	// guard from the generic helper would hide *http.Transport and skip HTTP/1.1
+	// and credential-scoped pooling below. Keep the original auth bound.
+	transportAuth := auth
+	if auth != nil && auth.HubAuthority != nil {
+		transportAuth = auth.Clone()
+		transportAuth.HubAuthority = nil
+	}
+	client := helps.NewProxyAwareHTTPClient(httptransport.WithoutDecorator(ctx), cfg, transportAuth, timeout)
 	// Direct requests share an HTTP/1.1 pool only within the selected credential.
 	if client.Transport == nil {
 		client.Transport = antigravityHTTP11Transport(auth, antigravityBaseTransport, cfg)

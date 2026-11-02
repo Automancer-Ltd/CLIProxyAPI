@@ -9,6 +9,7 @@ import (
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v8/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/hubauth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
@@ -203,6 +204,11 @@ func (b *Builder) Build() (*Service, error) {
 	}
 	if b.cfg.HubAuthority != nil && (b.cfg.Home.Enabled || b.cfg.Plugins.Enabled || b.pluginHost != nil) {
 		return nil, fmt.Errorf("shared hub authority cannot run Home or dynamic plugins")
+	}
+	if b.cfg.HubAuthority != nil {
+		if _, err := hubauth.ConfigAuths(b.cfg); err != nil {
+			return nil, err
+		}
 	}
 	if b.configPath == "" {
 		return nil, fmt.Errorf("cliproxy: configuration path is required")

@@ -9,6 +9,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/hubauth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
@@ -54,10 +55,15 @@ func (s *Service) Run(ctx context.Context) error {
 		s.homeMu.Unlock()
 	}()
 
+	cfg := s.currentConfig()
+	if cfg != nil && cfg.HubAuthority != nil {
+		if _, err := hubauth.ConfigAuths(cfg); err != nil {
+			return err
+		}
+	}
 	s.startModelCatalogUpdaters(ctx)
 
 	usage.StartDefault(ctx)
-	cfg := s.currentConfig()
 	homeEnabled := cfg != nil && cfg.Home.Enabled
 	hubEnabled := cfg != nil && cfg.HubAuthority != nil
 	if homeEnabled {

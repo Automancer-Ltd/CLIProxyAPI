@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -29,6 +30,9 @@ func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Au
 	}
 	updated, errRefresh := e.refreshToken(ctx, auth.Clone())
 	if errRefresh != nil {
+		if auth.HubAuthority != nil {
+			return updated, errRefresh
+		}
 		return nil, errRefresh
 	}
 	return updated, nil
@@ -105,6 +109,9 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 }
 
 func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if refreshed, handled, err := cliproxyauth.RunHubRefresh(ctx, auth, e.refreshToken); handled {
+		return refreshed, err
+	}
 	if auth == nil {
 		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
 	}
@@ -117,24 +124,33 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	}
 	refreshToken = strings.TrimSpace(refreshToken)
 
-	result, errRefresh, _ := antigravityRefreshGroup.Do(refreshToken, func() (interface{}, error) {
+	refresh := func() (interface{}, error) {
 		// A caller may leave, but shared credential acquisition must still be bounded.
 		refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), antigravityCredentialAcquisitionTimeout)
 		defer cancelRefresh()
 		return e.refreshTokenSingleFlight(refreshCtx, auth, refreshToken)
-	})
-	if errRefresh != nil {
-		return auth, errRefresh
+	}
+	var result any
+	var errRefresh error
+	if auth.HubAuthority != nil {
+		result, errRefresh = refresh()
+	} else {
+		result, errRefresh, _ = antigravityRefreshGroup.Do(refreshToken, refresh)
 	}
 	tokenResp, ok := result.(*antigravityTokenRefreshData)
 	if !ok || tokenResp == nil {
+		if errRefresh != nil {
+			return auth, errRefresh
+		}
 		return auth, fmt.Errorf("antigravity token refresh failed: invalid single-flight result")
 	}
 
 	if auth.Metadata == nil {
 		auth.Metadata = make(map[string]any)
 	}
-	auth.Metadata["access_token"] = tokenResp.AccessToken
+	if tokenResp.AccessToken != "" {
+		auth.Metadata["access_token"] = tokenResp.AccessToken
+	}
 	if tokenResp.RefreshToken != "" {
 		auth.Metadata["refresh_token"] = tokenResp.RefreshToken
 	}
@@ -143,6 +159,9 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	auth.Metadata["timestamp"] = now.UnixMilli()
 	auth.Metadata["expired"] = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
 	auth.Metadata["type"] = antigravityAuthType
+	if auth.HubAuthority != nil || errRefresh != nil {
+		return auth, errRefresh
+	}
 	if errProject := e.ensureAntigravityProjectID(ctx, auth, tokenResp.AccessToken); errProject != nil {
 		log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
 	}
@@ -166,7 +185,12 @@ func (e *AntigravityExecutor) refreshTokenSingleFlight(ctx context.Context, auth
 	// Real Antigravity uses Go's default User-Agent for OAuth token refresh
 	httpReq.Header.Set("User-Agent", "Go-http-client/2.0")
 
-	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
+	transportAuth := auth
+	if auth.HubAuthority != nil {
+		transportAuth = auth.Clone()
+		transportAuth.HubAuthority = nil
+	}
+	httpClient := baseauth.RefreshClient(ctx, newAntigravityHTTPClient(ctx, e.cfg, transportAuth, 0))
 	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "oauth_refresh").Do(httpReq)
 	if errDo != nil {
 		return nil, errDo
@@ -197,6 +221,9 @@ func (e *AntigravityExecutor) refreshTokenSingleFlight(ctx context.Context, auth
 		return nil, errUnmarshal
 	}
 
+	if strings.TrimSpace(tokenResp.AccessToken) == "" {
+		return &tokenResp, errors.New("antigravity refresh response missing access_token")
+	}
 	return &tokenResp, nil
 }
 

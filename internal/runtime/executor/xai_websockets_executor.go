@@ -415,6 +415,9 @@ func rewriteXAIWebsocketDownstreamIDString(value string, key string, upstreamRes
 }
 
 func (e *XAIWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if auth != nil && auth.HubAuthority != nil {
+		return cliproxyexecutor.Response{}, fmt.Errorf("hub xAI upstream websocket mode is not enrolled")
+	}
 	if e == nil || e.XAIExecutor == nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("xai websockets executor: executor is nil")
 	}
@@ -422,6 +425,9 @@ func (e *XAIWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyauth.
 }
 
 func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	if auth != nil && auth.HubAuthority != nil {
+		return nil, fmt.Errorf("hub xAI upstream websocket mode is not enrolled")
+	}
 	if e == nil || e.XAIExecutor == nil {
 		return nil, fmt.Errorf("xai websockets executor: executor is nil")
 	}

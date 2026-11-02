@@ -24,7 +24,7 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - `.env` is auto-loaded from the working directory
 - Auth material defaults under `auths/`
 - Storage backends: file-based default; optional Postgres/git/object store (`PGSTORE_*`, `GITSTORE_*`, `OBJECTSTORE_*`)
-- Opt-in shared hub authority: [contract, mode coverage, installation and rollback](docs/plans/hub-credential-authority.md). This foundation is inactive pending estate provider/transport coverage; do not enable it as a two-provider replacement for the live pool.
+- Opt-in shared hub authority: [contract, mode coverage, installation and rollback](docs/plans/hub-credential-authority.md). Run the documented read-only `hub-preflight` before activation. Source coverage remains inactive until parent t12792 completes reviewed installation and live acceptance.
 
 ## Architecture
 - `cmd/server/` — Server entrypoint

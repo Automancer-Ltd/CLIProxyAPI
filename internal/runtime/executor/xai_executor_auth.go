@@ -14,6 +14,9 @@ import (
 
 // Refresh refreshes xAI OAuth credentials using the stored refresh token.
 func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if refreshed, handled, err := cliproxyauth.RunHubRefresh(ctx, auth, e.Refresh); handled {
+		return refreshed, err
+	}
 	log.Debugf("xai executor: refresh called")
 	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
 		return refreshed, err
@@ -28,7 +31,7 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 	tokenEndpoint := xaiMetadataString(auth.Metadata, "token_endpoint")
 	svc := xaiauth.NewXAIAuthWithProxyURL(e.cfg, auth.ProxyURL)
 	td, err := svc.RefreshTokens(ctx, refreshToken, tokenEndpoint)
-	if err != nil {
+	if err != nil && td == nil {
 		return nil, err
 	}
 	if auth.Metadata == nil {
@@ -36,7 +39,9 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 	}
 	auth.Metadata["type"] = "xai"
 	auth.Metadata["auth_kind"] = "oauth"
-	auth.Metadata["access_token"] = td.AccessToken
+	if td.AccessToken != "" {
+		auth.Metadata["access_token"] = td.AccessToken
+	}
 	if td.RefreshToken != "" {
 		auth.Metadata["refresh_token"] = td.RefreshToken
 	}
@@ -72,5 +77,5 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 	if strings.TrimSpace(auth.Attributes["base_url"]) == "" {
 		auth.Attributes["base_url"] = xaiauth.DefaultAPIBaseURL
 	}
-	return auth, nil
+	return auth, err
 }

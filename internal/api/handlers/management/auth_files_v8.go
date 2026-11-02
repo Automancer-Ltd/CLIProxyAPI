@@ -316,6 +316,15 @@ func (h *Handler) StartOAuthV8(c *gin.Context) {
 		}
 	}
 
+	if _, shared := h.tokenStoreWithBaseDir().(coreauth.HubAuthority); shared {
+		switch strings.ToLower(strings.TrimSpace(provider)) {
+		case "anthropic", "claude", "codex", "antigravity", "xai", "meta", "devin":
+		default:
+			c.JSON(http.StatusConflict, gin.H{"error": "provider login is not enrolled in shared hub authority"})
+			return
+		}
+	}
+
 	if targetName != "" || targetAuthIndex != "" {
 		targetAuth, okTarget := h.lookupAuthFile(targetName, targetAuthIndex)
 		if !okTarget || targetAuth == nil {
@@ -469,6 +478,10 @@ func (h *Handler) oauthTargetProviderMatches(targetProvider, requestedProvider s
 
 // ImportOAuthV8 dispatches credential import using the provider query parameter.
 func (h *Handler) ImportOAuthV8(c *gin.Context) {
+	if _, shared := h.tokenStoreWithBaseDir().(coreauth.HubAuthority); shared {
+		c.JSON(http.StatusConflict, gin.H{"error": "provider import is not enrolled in shared hub authority"})
+		return
+	}
 	switch strings.ToLower(strings.TrimSpace(c.Query("provider"))) {
 	case "":
 		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})

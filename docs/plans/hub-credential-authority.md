@@ -1,49 +1,79 @@
 # Shared hub credential authority
 
-This is an inactive foundation for Tracker t12857. Do not enable it on the estate yet. Parent t12792 owns
-installation and live acceptance. Follow-up t13262 owns the remaining provider and transport coverage needed to
-preserve the currently enabled routes. No production credential, binary, service or configuration was changed here.
+Shared authority remains inactive pending the reviewed coverage change and parent installation acceptance.
+Tracker t13262 extends the t12857 foundation to the enabled provider pool and Codex transports. Parent t12792 owns
+installation and live acceptance. This source task changes no production credential, binary, service or configuration.
 
 ## Ownership and source contract
 
-- This lane, ln-eb836543, owns CLIProxyAPI's client, encrypted snapshots, store adapter, guarded runtime and fixtures.
+- Foundation t12857 merged in fork PR47 as `fc067016e00c4265711fea0bdbb4a5548138ad52`. Its reviewed head was
+  `28ae113cdd135fe3c8387f2811333593ef276cc5` (t12857 event187054). Coverage lane ln-8bc0c823 owns t13262.
+  Read `tracker.items.get {id:"t13262"}` for its current deliverable and exact-commit review receipt.
 - Tracker t12884 owns `apps/tracker/HUB-AUTHORITY.md` and `packages/tracker-contract/src/hub.ts` in
-  Automancer-Ltd/automancer-dashboard. Baseline PR1056 merged as `35b4aa6f20099596b05cf933b09dd220faf6805e` after
-  exact-commit review of `c57959855e6420c170a48936c70e7f6cef1af5e1`. The metadata extension is PR1065 source
-  `7b8fc29d51cf7e5c2397a8b19422cf8926670ea1`; admission wording is now at
-  `a089ee5bd97f9528a4ce3fee7bc82cb6147b4098` with unchanged schemas. Reconcile its accepted review, merge and served contract before activation.
-  A previous review of PR1056 does not review the metadata extension.
+  Automancer-Ltd/automancer-dashboard. Its contract merge is `5fc922cf9dd4b6ec35dc012f61313746c1580a23`.
+  Read that item for the current served revision and protected identity acceptance; source review is separate.
 - t12900 owns the dedicated private B2 prefix, key and encryption binding. Its human credential-transfer dependency
   is t13054. The Tracker Access pair alone cannot read B2 or decrypt credentials.
 - t12792 owns failover routing, installation, rollback coordination and the one live outage/return acceptance.
   Read that item's latest t11543 ruling before the drill; this code change authorizes no drill or installation.
-- t13262 waits on this foundation; parent activation waits on t13262. This implementation does not wait on the live
-  drill, which would create a circular dependency.
+- Parent activation waits on the reviewed t13262 merge. This implementation does not wait on the live drill,
+  which would create a circular dependency.
 
-## Supported modes and activation boundary
+## Provider and mode coverage
 
-| Mode | This foundation |
-| --- | --- |
-| Claude single OAuth refresh grant, HTTP requests/streams | Guarded |
-| Codex single outer OAuth refresh grant, HTTP requests/streams | Guarded |
-| Codex SIWC or combined outer/SIWC | Refused before issuing a refresh intent/provider call |
-| Codex upstream WebSocket and duplex/replay | Refused; HTTP fixtures do not establish WebSocket acceptance |
-| Other shared providers, static keys and local routes | Not enrolled; no shared credential authorization |
-| Dynamic plugins or Home with shared mode | Startup refused |
-| Native CLI login/import/SIWC commands with shared config | Refused; use the active hub's v8 management flow |
-| v8 management explicit login/upload, native metadata/status, removal | Authoritative encrypted writes |
-| Native timed hold expiry/clear | Selection restriction only; never emits Tracker unhold |
-| Legacy auth-file watcher, config-key ingestion and live config mutations | Disabled/refused in shared mode |
-| Legacy file download | Refused; it cannot return an obsolete copied file |
+The inventory below records the non-secret m6 configuration read on 2026-11-02. Refresh it through
+`hub-readonly.usage` and the read-only preflight below before installation. The service plist is
+`/Users/waseem/Library/LaunchAgents/uk.automancer.hub.plist`; its `ProgramArguments` identify the binary and config.
+The inspected config uses v8 `oauth.auth-dir` and `api-keys.openai-compatibility[].keys`. File field presence was
+read on m6 without copying or printing token values. Enabled labels alone were not used to infer credential type.
 
-Parent inventory and transport evidence are t12857 events181815 and182562. They establish enabled wider providers
-and configured WebSocket capability, not proof of every grant type or actual upstream WebSocket traffic. Read live
-inventory through `hub-readonly.usage` and the configured mode flags when classifying t13262. Do not infer that a
-`gemini-credit` route proves Gemini OAuth or that an absent fixture proves SIWC/plugins are unused.
+| Enabled route | Observed source/mode | Guarded source path |
+| --- | --- | --- |
+| antigravity | OAuth access/refresh token and existing project_id | `antigravity_executor_auth.go`: request-time and scheduled refresh; native HTTP, credits and SDK model discovery use guarded transport |
+| claude | Single OAuth refresh grant | Foundation Claude native refresh and HTTP/stream/prepare/raw-request guards |
+| codex | Outer OAuth grant; no SIWC or upstream websockets flag in inspected files | `CodexAutoExecutor`: HTTP for current configuration; guarded upstream WebSocket/duplex when explicitly enabled |
+| xai | OAuth access/refresh token with token_endpoint; no upstream websockets flag | `xai_executor_auth.go` and `internal/auth/xai`: one token POST; native HTTP routes guarded |
+| meta | DCA grant with minted access/API key | `meta_executor.go` and `internal/auth/meta`: key mint is a durable refresh, including management usage polls |
+| devin | Session token/API key | `devin_executor.go`: serving and status HTTP guarded; status observations commit as metadata without rotating the grant |
+| deepseek | Configured static OpenAI-compatible key | Native config synthesizer and OpenAICompatExecutor |
+| zai | Configured static OpenAI-compatible key | Native config synthesizer and OpenAICompatExecutor |
+| opencode-go | Configured static OpenAI-compatible key | Native config synthesizer and OpenAICompatExecutor |
+| local | Configured local OpenAI-compatible route/key | Native config synthesizer and OpenAICompatExecutor |
+| gemini-credit | Configured static OpenAI-compatible key | Native config synthesizer and OpenAICompatExecutor; this is not Gemini OAuth |
 
-The default configuration retains existing behavior. Adding `hub-authority` switches the entire service to the shared
-store; it is not a way to silently remove current routes. No activation is safe until t13262 preserves the required
-live provider/transport behavior and parent acceptance is ready.
+Static routes retain their config identity, model mappings, headers, proxy and scheduling settings. They require
+current process ownership and hydration to serve, but create no OAuth account, generation or refresh intent.
+Their configuration is immutable for a running shared process; an ordinary coordinated config release changes it.
+Encrypted snapshot identities cannot collide with these routes. Mutable logins retain native timed holds, group,
+pin and disabled settings alongside Tracker holds. Devin's known status fields and Antigravity's catalog cache
+are metadata observations; they cannot rotate a grant or clear quarantine.
+
+The inspected service has Home and plugins disabled. No SIWC was found. Native CLI login/import commands, Home,
+dynamic plugins, SIWC, native config-key providers outside OpenAI compatibility, and xAI upstream WebSockets are
+not enrolled. The builder/preflight, shared management handlers and direct xAI WebSocket executor reject those
+paths before provider effects. Codex downstream WebSocket capability is preserved: downstream transport alone
+does not force upstream WebSockets. This work does not alter any client transport setting.
+
+### Read-only activation preflight
+
+Build `go build -o /PATH/hub-preflight ./cmd/hub-preflight` from the reviewed commit. On each intended host run:
+
+```sh
+/PATH/hub-preflight -config /PATH/TO/SERVICE/config.yaml
+# Optional override for the source inventory being reconciled:
+/PATH/hub-preflight -config /PATH/TO/SERVICE/config.yaml -auth-dir /PATH/TO/SOURCE/AUTHS
+```
+
+Use the paths returned by that host's service definition. The command reads config and source credential files,
+reports only provider/mode/count rows, and returns nonzero on an unsupported or unreadable source. It starts no
+service, performs no provider request, writes no file, and does not acquire ownership. It deliberately avoids
+`LoadConfig`, which can hash and rewrite a plaintext management key. Reject symlinked credential entries.
+Reconcile the report with `hub-readonly.usage`, disabled accounts and each host's expected static routes. A passing
+preflight establishes format coverage, not credential validity, migration completeness or live outage acceptance.
+
+Startup never ingests copied OAuth files. It loads only the encrypted authority plus synthesized static config.
+An unsupported encrypted record prevents manager load and `/hub/ready` success. Empty bootstrap readiness still
+requires the parent's explicit account/mode reconciliation before routing.
 
 ## Protocol and encrypted data
 
@@ -80,7 +110,7 @@ Ciphertext is fsynced in the private spool before upload; retries preserve its e
 - Account UUIDs and grant generations are separate from native scheduler counters and credential filenames.
 
 Metadata writes use the closed `kind:metadata` commit, preserving generation, status and every unresolved intent.
-The store compares the whole grant after excluding only explicitly recognized user controls. Unknown/nested fields
+The store compares the whole grant after excluding only explicitly recognized user controls and native status/catalog observations. Unknown/nested fields
 are grant data. It rebases only changed controls onto the latest record. Late refresh results merge into the latest
 controls. No metadata write, timed expiry, refresh or login can lift Tracker held. Explicit administrative unhold
 remains an existing authenticated Tracker action. Duplicate/renamed refresh grants and a replayed login cannot clear
@@ -89,8 +119,8 @@ quarantine by advancing a generation.
 ## Runtime callers
 
 `internal/hubauth` owns protocol, encrypted objects, coordinator and native Store adapter. `sdk/cliproxy/auth/hub.go`
-gates Manager execution, counting, streams, retries, preparation, raw HTTP and refresh. The native Claude/Codex refresh
-entry points also route direct calls through the authority. HTTP transports recheck the hydrated generation and
+gates Manager execution, counting, streams, retries, preparation, raw HTTP and refresh. The native Claude, Codex, Antigravity, xAI, Meta and Devin refresh
+entry points also route direct calls through the authority. Devin uses its status-only path. HTTP transports recheck the hydrated generation and
 controls at actual dispatch. Each authorization reads live owner/head state without holding the mutation mutex and
 compares it with immutable verified snapshot data, current local quarantine and the conservative deadline. A changed
 head requires serialized hydration before serving; there is no stale-control grace period. Delayed reads cannot
@@ -102,6 +132,40 @@ A cold standby may expose its listener while credential operations fail closed. 
 current process ownership and verified hydration, otherwise 503. This is process readiness, not proof that all expected
 accounts were migrated or a served binary revision; retain the release's separate revision check.
 
+Actual shared-credential callers are covered at these boundaries:
+
+| Caller | Final effect boundary |
+| --- | --- |
+| Manager execute, stream, count, prepare, raw HTTP and retries | `sdk/cliproxy/auth/hub.go` and `conductor_execution.go`; native transport rechecks after preparation |
+| Claude/Codex OAuth refresh | Foundation native refresh dispatch guard; SIWC partitions remain refused |
+| Antigravity request-time/scheduled refresh | `refreshToken` enters the same authority and returns rotation data before optional work |
+| xAI refresh and Meta mint | `RefreshClient` consumes one permission, disables redirects and bypasses local refresh singleflight for enrolled calls |
+| Devin status refresh | Serving guard, unchanged-grant comparison and metadata commit; no refresh intent |
+| Native request/stream/count/media/credits HTTP | `helps/proxy_helpers.go`, `helps/utls_client.go`, and `newAntigravityHTTPClient`; all selected auths retain their authority binding |
+| Antigravity background catalog | `sdk/cliproxy/antigravity_models.go` guards its separately constructed HTTP client |
+| Management API calls and usage reads | `api_tools.go` guards token resolution and final transport; required refresh uses Manager |
+| Meta management usage | `usage_refresh.go` calls Manager refresh and parses the encrypted committed mint response; never discards a replacement key |
+| v8 upload/login, metadata/status and removal | Authoritative Store writes; unsupported login/import providers refuse before dispatch; old file download refuses |
+| Codex upstream WebSocket/duplex/reuse/control frames | Live admission at dial and each user request message; local lease/fence/account checks on socket I/O and decoded/queued delivery, including TLS buffering |
+| File watcher, live config mutation, Home, plugins, native CLI login | Not started/refused in shared mode; no alternate credential authority |
+
+A WebSocket session captures the process host, nonce and epoch plus the selected account baseline. A later process
+acquisition cannot authorize an old socket. Authority failure closes and permanently invalidates that connection.
+Live Tracker admission runs at connection opening and each user create, append, steer or interrupt message.
+TLS records, ping/pong, response deltas and buffered delivery normally check the immutable locally hydrated view:
+the original process fence, current lease deadline, account status/quarantine/generation and exact record baseline.
+The coordinator loop in `sdk/cliproxy/service_hub.go` updates that view; observed ownership/head loss, failed
+hydration, shutdown or local mutations invalidate it. An empty or concurrently replaced view is not itself a
+session refusal: frame checks join any ongoing mutation and, if still needed, perform one serialized rehydration.
+They then compare the session's own account and baseline against the current view. Concurrent readers share that
+publication; unrelated account edits do not permanently close their sockets. Known lease/fence loss or shutdown
+still refuses immediately, and a failed rehydration never authorizes from stale data. External control propagation during a turn is bounded by
+that loop's cadence and the conservative lease deadline; a new turn always performs a live check. A failed socket
+check permanently closes the connection. Messages already dispatched cannot be recalled. Parent acceptance still
+owns live latency and failover measurement. Stable response-frame volume adds no Tracker traffic; publication
+gaps can pause delivery for the mutation and one shared rehydration.
+For HTTP, authorization is at dispatch; this does not claim cancellation of an already accepted provider request.
+
 Native `shared-upstream` config is not machine ownership. Home would add another control plane and is not used.
 
 ## Prepared installation sequence for the parent
@@ -109,7 +173,8 @@ Native `shared-upstream` config is not machine ownership. Home would add another
 Do these only after reviewed source, t12884 release/identity receipts, t12900 scope/decrypt receipts and t13262 coverage.
 The lane has not run these steps with real credentials.
 
-1. Reconcile current release ownership and binary revision on both hosts. Use the parent's existing release workflow.
+1. Run the read-only preflight on both hosts and reconcile all expected routes, grant modes and controls.
+   Reconcile current release ownership and binary revision on both hosts. Use the parent's existing release workflow.
    Retain the previous binaries/configuration and the newest auth material using its verified backup procedure.
 2. Stop both old hub services and their automatic restart paths while switching authority. Do not permit either old
    binary to refresh the shared files during migration. Preserve provider-result spools and unresolved intents.
@@ -180,8 +245,43 @@ stranded intent, a delayed accepted permit with zero native sends and retained q
 while one authority read stalls, rejection of that stale reply after a hold, unchanged runtime saves without network
 I/O, and a lost begin acknowledgment whose insertion occurs after an older account-list reply.
 
-Next: publish the corrected head and final-head CI on the existing fork PR47, then request fresh Q7 authentication
-review on t12857 and end the turn. Reconcile t12884's final reviewed metadata merge before sign-off.
-After this foundation merges, t13262 supplies the activation coverage; parent t12792 retains live acceptance.
+Coverage t13262 adds native takeover/redirect tests, partial rotation retention, static routes without invented
+refreshes, Devin status semantics, management Meta mint persistence, startup/login refusal and Antigravity discovery.
+Codex tests exercise Manager -> AutoExecutor -> duplex with a valid initial create and steering frame, then hold,
+generation change or takeover before the next frame. Separate regressions cover decoded and queued buffered frames,
+permanent socket failure, reacquired epochs, and downstream WebSocket clients whose upstream remains HTTP.
+The new provider and buffered-frame tests fail on foundation merge `fc067016`; all endpoints and grants are synthetic.
 
-Last verified: 2026-11-01, synthetic credentials on auto-vault/m6 and source/Tracker reads. No production activation.
+Independent review of `7dfd804586d1` found that the generic HTTP helper's hub wrapper hid the Antigravity
+transport before native pool selection. The corrected path selects the transport with an unbound clone and
+adds one guard around the final credential-scoped pool. `TestAntigravityHubHttpRequestPreservesNativeTransport`
+reproduces the failure on that head through public `HttpRequest` calls to a synthetic TLS server offering HTTP/2:
+both default and context transports advertised ALPN, used HTTP/2, shared a connection across credentials and
+authorized twice per dispatch. It requires native TLS 1.3/HTTP/1.1 without ALPN, same-credential connection reuse,
+separate connections across credentials, one authorization per dispatch and zero sends after ownership loss.
+
+Independent review of `c765829d890b` found that WebSocket frame checks performed live Tracker reads, coupling
+stream throughput and reliability to control-plane round trips. The corrected session check is local; live
+authorization moved to the user-message boundary. `TestCodexDuplexUsesLocalFrameChecksAndLiveTurnAdmission`
+fails on that head when a synthetic Tracker outage interrupts the first response delta. It now delivers 64 deltas
+plus ping/pong with zero authority calls while the local lease remains valid, admits the next create with one live
+call, and refuses a further create during the outage. Local-view checks cover lease expiry, observed takeover,
+hold, grant/control changes, quarantine, failed hydration and shutdown. Existing tests retain buffered-frame
+refusal, permanent socket failure and rejection of a reacquired epoch.
+
+Independent review of `34e1f601c7e9` found that an empty view during any account's commit incorrectly killed
+unrelated sessions. `TestHubSessionSurvivesUnrelatedAccountWrites` reproduces this with 20 concurrent priority
+edits on a Claude account and hold/unhold/remove controls, while checking a Codex session. It now requires zero
+refused checks for those changes and still rejects a hold on the Codex account itself. Frame checks synchronize
+only when publication is missing or changes during their read; the ordinary path remains local. A failed
+rehydration and known ownership loss retain refusal, without resurrecting a failed socket or a later epoch.
+
+Initial coverage validation passed on m6: the full hub authority suite with `-race`, the buffered Codex transport checks
+with `-race`, both server/preflight builds, vet and tests for every changed Go package. The standalone preflight
+returned the expected synthetic provider/mode/count and left its config/auth inputs byte-for-byte unchanged.
+Read t13262 for the exact final-head CI and independent authentication review. Coverage is
+source/synthetic evidence only. Parent t12792 must reconcile the reviewed merge, release ownership, both served
+revisions, identity/B2 receipts, migrated account controls and live monitor/outage acceptance before completion.
+Rollback must preserve the newest encrypted head, provider results, both spools and every unresolved intent as above.
+
+Last verified: 2026-11-02, source and non-secret m6 inventory reads; synthetic fixtures on auto-vault and m6. No production activation.

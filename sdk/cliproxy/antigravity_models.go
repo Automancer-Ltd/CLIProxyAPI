@@ -470,6 +470,7 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
 		client.Transport = transport
 		defer transport.CloseIdleConnections()
 	}
+	client.Transport = coreauth.GuardHubTransport(client.Transport, auth)
 	project, _ := auth.Metadata["project_id"].(string)
 	body, errMarshal := json.Marshal(map[string]string{"project": project})
 	if errMarshal != nil {
