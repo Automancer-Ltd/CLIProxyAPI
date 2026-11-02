@@ -33,8 +33,9 @@ func GuardHubTransport(base http.RoundTripper, a *Auth) http.RoundTripper {
 }
 
 // HubSessionAuthority binds a connection to its opening process epoch and grant.
-// Opening performs live admission; the returned frame check must use only local
-// hydrated state and its lease deadline. A later epoch cannot authorize an old socket.
+// Opening performs live admission; stable frame checks use local hydrated state
+// and its lease deadline. Publication gaps may rehydrate once, but must never
+// grant an old socket a later epoch or changed account state.
 type HubSessionAuthority interface {
 	OpenHubSession(context.Context, *Auth) (func(context.Context) error, error)
 }
@@ -111,7 +112,8 @@ func (c *hubConn) Read(p []byte) (int, error) {
 }
 
 // CheckHubConn rechecks a decoded or queued frame, even if TLS/websocket buffers
-// satisfied the read without touching the guarded socket. This never performs I/O.
+// satisfied the read without touching the guarded socket. Stable frames stay local;
+// the authority may join a pending publication before deciding whether to refuse.
 func CheckHubConn(conn net.Conn) error {
 	if guarded := unwrapHubConn(conn); guarded != nil {
 		return guarded.authorize()

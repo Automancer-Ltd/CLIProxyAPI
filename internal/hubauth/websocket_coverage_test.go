@@ -284,7 +284,7 @@ func TestOpenSessionCannotAdoptReacquiredEpoch(t *testing.T) {
 	}
 }
 
-func TestHubSessionLocalChecksRejectInvalidHydration(t *testing.T) {
+func TestHubSessionChecksRejectInvalidHydration(t *testing.T) {
 	for _, loss := range []string{"lease-expiry", "observed-takeover", "hold", "generation", "metadata", "quarantine", "hydration-failure", "stop"} {
 		t.Run(loss, func(t *testing.T) {
 			ctx := context.Background()
@@ -347,6 +347,11 @@ func TestHubSessionLocalChecksRejectInvalidHydration(t *testing.T) {
 				if err := s.coordinator.Step(ctx); err == nil {
 					t.Fatal("incomplete hydration succeeded")
 				}
+				// The frame may retry a publication gap, but incomplete hydration
+				// must still refuse if that retry cannot establish the current view.
+				f.mu.Lock()
+				f.failReply = "accounts.list"
+				f.mu.Unlock()
 			case "stop":
 				err = s.coordinator.Stop(ctx)
 			}
@@ -357,8 +362,8 @@ func TestHubSessionLocalChecksRejectInvalidHydration(t *testing.T) {
 			if err := check(ctx); err == nil {
 				t.Fatal("invalidated session accepted a frame")
 			}
-			if calls.Load() != before {
-				t.Fatal("invalidated frame check performed network I/O")
+			if (loss == "lease-expiry" || loss == "observed-takeover" || loss == "stop") && calls.Load() != before {
+				t.Fatal("known ownership loss attempted to restore authority")
 			}
 		})
 	}

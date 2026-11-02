@@ -152,13 +152,18 @@ Actual shared-credential callers are covered at these boundaries:
 A WebSocket session captures the process host, nonce and epoch plus the selected account baseline. A later process
 acquisition cannot authorize an old socket. Authority failure closes and permanently invalidates that connection.
 Live Tracker admission runs at connection opening and each user create, append, steer or interrupt message.
-TLS records, ping/pong, response deltas and buffered delivery check only the immutable locally hydrated view:
+TLS records, ping/pong, response deltas and buffered delivery normally check the immutable locally hydrated view:
 the original process fence, current lease deadline, account status/quarantine/generation and exact record baseline.
 The coordinator loop in `sdk/cliproxy/service_hub.go` updates that view; observed ownership/head loss, failed
-hydration, shutdown or local mutations invalidate it. External control propagation during a turn is bounded by
+hydration, shutdown or local mutations invalidate it. An empty or concurrently replaced view is not itself a
+session refusal: frame checks join any ongoing mutation and, if still needed, perform one serialized rehydration.
+They then compare the session's own account and baseline against the current view. Concurrent readers share that
+publication; unrelated account edits do not permanently close their sockets. Known lease/fence loss or shutdown
+still refuses immediately, and a failed rehydration never authorizes from stale data. External control propagation during a turn is bounded by
 that loop's cadence and the conservative lease deadline; a new turn always performs a live check. A failed socket
 check permanently closes the connection. Messages already dispatched cannot be recalled. Parent acceptance still
-owns live latency and failover measurement, but response-frame volume adds no Tracker traffic.
+owns live latency and failover measurement. Stable response-frame volume adds no Tracker traffic; publication
+gaps can pause delivery for the mutation and one shared rehydration.
 For HTTP, authorization is at dispatch; this does not claim cancellation of an already accepted provider request.
 
 Native `shared-upstream` config is not machine ownership. Home would add another control plane and is not used.
@@ -263,6 +268,13 @@ plus ping/pong with zero authority calls while the local lease remains valid, ad
 call, and refuses a further create during the outage. Local-view checks cover lease expiry, observed takeover,
 hold, grant/control changes, quarantine, failed hydration and shutdown. Existing tests retain buffered-frame
 refusal, permanent socket failure and rejection of a reacquired epoch.
+
+Independent review of `34e1f601c7e9` found that an empty view during any account's commit incorrectly killed
+unrelated sessions. `TestHubSessionSurvivesUnrelatedAccountWrites` reproduces this with 20 concurrent priority
+edits on a Claude account and hold/unhold/remove controls, while checking a Codex session. It now requires zero
+refused checks for those changes and still rejects a hold on the Codex account itself. Frame checks synchronize
+only when publication is missing or changes during their read; the ordinary path remains local. A failed
+rehydration and known ownership loss retain refusal, without resurrecting a failed socket or a later epoch.
 
 Initial coverage validation passed on m6: the full hub authority suite with `-race`, the buffered Codex transport checks
 with `-race`, both server/preflight builds, vet and tests for every changed Go package. The standalone preflight
