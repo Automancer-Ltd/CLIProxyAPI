@@ -97,17 +97,40 @@ header `x-opencode-session: estate-hub`, and one `api-key`. It serves these ids:
 | --- | --- |
 | `omen-alpha` | `omen-alpha` |
 | `kimi-k3.1-pro` | `kimi-k3.1-pro` |
-| `glm-5.3` | `glm-5.3` |
-| `glm-5.3-flash` | `glm-5.3-flash-oc` |
+| `glm-5.3` | `glm-5.3` (fallback tier, see below) |
+| `glm-5.3-flash` | `glm-5.3-flash` (fallback tier) and `glm-5.3-flash-oc` |
 | `deepseek-v4.1-flash` | `deepseek-v4.1-flash` |
 | `beam-free` | `beam-free` |
 
-`glm-5.3-flash-oc` is the OpenCode Go copy: the `zai` group already serves `glm-5.3-flash`, and
-one id can map to only one upstream. A hub id must not contain a slash when a harness prefixes it
+One hub id can map to more than one upstream: model entries with the same alias in different
+API-key groups form a priority pool. The group with the higher `priority` serves while its
+credential is ready; a refusal cools that credential and the next tier serves the same id. The
+`zai` group carries `priority: 10` and serves `glm-5.3` and `glm-5.3-flash` from the paid GLM
+Coding Plan; the `opencode-go` group (priority 0) registers the same two ids as the fallback
+tier, so the hub spends Z.AI first and OpenCode Go only when the plan refuses. This is how
+t14543 made the paid plan reachable from every lane host (2 Nov 2026).
+
+`glm-5.3-flash-oc` remains the explicit OpenCode-only copy for times the estate wants OpenCode Go
+directly. A hub id must not contain a slash when a harness prefixes it
 with a provider name: `opencode run -m <provider>/<id>` splits at the slash, so an id like
 `opencode-go/glm-5.3-flash` reaches opencode as a model it cannot resolve. Keep hub ids
 slash-free. The `opencode-go` models spend the OpenCode Go plan's own allowance; `beam-free` is
 free and mechanical-only in the routing table.
+
+To check which credential serves an id, read
+`GET /v8/management/credentials/models?name=openai-compatibility:<group>:<id>` for each group
+(the management key applies; send it on stdin, never argv), and make one cold completion (no
+session headers) against the id: the selection log line in `~/Library/Logs/hub.log` names the
+credential that took it. Consume-first alone would rank OpenCode Go ahead of Z.AI here because
+its week resets sooner; it is the priority tier that decides, so a missing `priority` on the
+`zai` group silently hands the ids back to OpenCode Go.
+
+After replacing `config.yaml` by rename (staged file moved over it), confirm the reload actually
+ran: the log line `config file changed, reloading` must appear in `~/Library/Logs/hub.log`. The
+file watcher can miss a rename-deployed config (seen 2 Nov 2026: the registry kept the old model
+lists until the service restarted). If the line is missing, rewrite the same content in place
+(same inode, fires the Write event) or `launchctl kickstart -k gui/$(id -u)/uk.automancer.hub`,
+then re-read `/v8/management/credentials/models`.
 
 ### Rotating the OpenCode Go key
 
