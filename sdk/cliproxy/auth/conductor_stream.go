@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
@@ -154,7 +155,20 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		var failed bool
 		var sawCompleted bool
 		var sawIncomplete bool
+		var sawOutput bool
 		forward := true
+		// accountCanceled applies a canceled delivery's output to the credit ledger: the
+		// upstream already generated it, so the paid-credits guard must not keep spending
+		// against the balance it had before the request. It records no success or failure,
+		// because a client cancellation says nothing about credential health.
+		accountCanceled := func() {
+			if !sawOutput || auth == nil {
+				return
+			}
+			// The cached headers have no observation time of their own, so apply them as
+			// a partial observation: a stale 60% must not clear a newer socket's 100%.
+			accountServedResponse(auth, provider, internallogging.GetResponseHeaders(ctx), time.Now())
+		}
 		var rewriter *StreamRewriter
 		if aliasResult.ForceMapping && strings.TrimSpace(aliasResult.OriginalAlias) != "" {
 			rewriter = NewStreamRewriter(StreamRewriteOptions{RewriteModel: aliasResult.OriginalAlias})
@@ -205,6 +219,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			if len(payload) == 0 {
 				return true
 			}
+			sawOutput = true
 			chunk.Payload = payload
 			if ctx == nil {
 				out <- chunk
@@ -220,12 +235,14 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		}
 		for _, chunk := range buffered {
 			if ok := emit(chunk); !ok {
+				accountCanceled()
 				discardStreamChunks(remaining)
 				return
 			}
 		}
 		for chunk := range remaining {
 			if ok := emit(chunk); !ok {
+				accountCanceled()
 				discardStreamChunks(remaining)
 				return
 			}
@@ -233,6 +250,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		if tail := finishForceMappedStreamChunks(rewriter); len(tail) > 0 {
 			tailChunk := cliproxyexecutor.StreamChunk{Payload: tail}
 			if !emit(tailChunk) {
+				accountCanceled()
 				return
 			}
 		}

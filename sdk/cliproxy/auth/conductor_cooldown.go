@@ -922,6 +922,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					auth.UpdatedAt = now
 				}
 			}
+			if !staleEpoch && !result.SkipQuotaObservation {
+				// A token rotated during the request, but the provider account is the same:
+				// its spend must still reach the ledger, or later requests keep spending
+				// against the old balance (t10647 review).
+				accountServedResponse(auth, result.Provider, internallogging.GetResponseHeaders(ctx), time.Now())
+			}
 			m.mu.Unlock()
 			releaseMutation()
 			m.hook.OnResult(ctx, result)
@@ -1365,6 +1371,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 		if !result.SkipQuotaObservation {
 			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
+			recordQuotaExhaustion(auth, now)
+			observeCreditSpend(auth, result.Provider, responseHeaders, now)
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			}

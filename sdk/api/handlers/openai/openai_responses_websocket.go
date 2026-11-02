@@ -837,7 +837,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			cliCtx = cliproxyexecutor.WithWebsocketInput(cliCtx, duplexInput)
 			cliCtx = cliproxyexecutor.WithWebsocketAuthCheck(cliCtx, func(authID string) bool {
 				current, ok := sessionAuthByID(authID)
-				return ok && current != nil && !current.Disabled && current.Status != coreauth.StatusDisabled
+				return ok && current != nil && !current.Disabled && current.Status != coreauth.StatusDisabled &&
+					coreauth.AuthServesWebsocketTurn(current, time.Now())
 			})
 			boundPrincipal := usage.APIKeyFromContext(cliCtx)
 			cliCtx = cliproxyexecutor.WithWebsocketTurnAuthorizer(cliCtx, func(turnPayload []byte) ([]byte, error) {

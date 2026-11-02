@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -572,6 +573,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 		var outputFallback [][]byte
 		// A business rejection followed by EOF with nothing outstanding stays terminal.
 		terminalBusinessRejection := false
+		var creditTracker streamCreditTracker
 		for {
 			kind, payload, errRead := readCodexWebsocketMessage(streamCtx, sess, conn, readCh)
 			if errRead != nil {
@@ -682,6 +684,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					current, pending = pending[0], pending[1:]
 				}
 				responseID = gjson.GetBytes(payload, "response.id").String()
+				creditTracker.start(responseID)
 				// Retain response settings, not request history or authorization headers.
 				// In-flight steering pins its parent's settings independently of this window.
 				snapshot := *current
@@ -717,6 +720,12 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			}
 			observeCodexTokenEvent(reporter, payload)
 			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
+			// Quota events reach routing only when the stream ends; a used-up window or a
+			// lower credit balance must stop the next turn on this socket (t10647).
+			if quota := helps.ParseCodexQuotaEventHeaders(payload); len(quota) > 0 {
+				cliproxyauth.ObserveStreamQuota(auth, quota, time.Now())
+				creditTracker.observeQuota(quota)
+			}
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 			// Steering acknowledgements, pending notifications and failures are opaque:
 			// preserve their IDs, input, sequence numbers and event types byte-for-byte.
@@ -860,6 +869,14 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					}
 				}
 				metadataMu.Unlock()
+				if (eventType == "response.failed" || eventType == "error") && creditTracker.startedResponse(endedID) {
+					// A started response that fails is still billed: account it now, while
+					// the socket can serve another paid turn (t10647 review).
+					if creditTracker.complete() {
+						cliproxyauth.ObserveStreamResponse(auth, time.Now())
+					}
+					creditTracker.forget(endedID)
+				}
 			}
 			if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
 				terminalBusinessRejection = false
@@ -868,6 +885,13 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				automaticActive = false
 				metadataMu.Unlock()
 				wakeWriter()
+				// Account this turn's credit spend now, not at socket close: a response
+				// that reported no balance must make the reading unknown before another
+				// connection can select the account on the old balance (t10647 review).
+				if creditTracker.complete() {
+					cliproxyauth.ObserveStreamResponse(auth, time.Now())
+				}
+				creditTracker.forget(responseID)
 				payload = normalizeCodexWebsocketCompletion(payload)
 				if !current.preserveNativeOutput {
 					payload = patchCodexCompletedOutput(payload, outputItems, outputFallback)
@@ -901,4 +925,65 @@ func isCodexTerminalEventType(eventType string) bool {
 		return true
 	}
 	return false
+}
+
+// streamCreditTracker follows one duplex socket's credit balance reports so a response
+// that completes without one is accounted as unknown at completion, rather than waiting
+// for the socket to close (t10647 review). A balance report may arrive just before the
+// next response starts (live capture puts codex.rate_limits ahead of response.created),
+// so the check is "since the previous completion", not "during this response". It is
+// used by the reader goroutine only.
+type streamCreditTracker struct {
+	balanceSeq  int64
+	reportedSeq int64
+	started     map[string]struct{}
+}
+
+// start remembers a response that began, so a failure that ends it can be accounted.
+func (t *streamCreditTracker) start(responseID string) {
+	if t == nil || responseID == "" {
+		return
+	}
+	if t.started == nil {
+		t.started = make(map[string]struct{})
+	}
+	t.started[responseID] = struct{}{}
+}
+
+// startedResponse reports whether the response began on this socket.
+func (t *streamCreditTracker) startedResponse(responseID string) bool {
+	if t == nil || responseID == "" {
+		return false
+	}
+	_, ok := t.started[responseID]
+	return ok
+}
+
+// forget drops a response that has been accounted.
+func (t *streamCreditTracker) forget(responseID string) {
+	if t == nil || responseID == "" {
+		return
+	}
+	delete(t.started, responseID)
+}
+
+// observeQuota counts a quota event that carried a credit balance.
+func (t *streamCreditTracker) observeQuota(headers http.Header) {
+	if t == nil || len(headers) == 0 {
+		return
+	}
+	if strings.TrimSpace(headers.Get("X-Codex-Credits-Balance")) != "" {
+		t.balanceSeq++
+	}
+}
+
+// complete records a completed response and reports whether the stream has reported no
+// balance since the previous completion, so the response's cost is unknown.
+func (t *streamCreditTracker) complete() bool {
+	if t == nil {
+		return false
+	}
+	reported := t.balanceSeq != t.reportedSeq
+	t.reportedSeq = t.balanceSeq
+	return !reported
 }
