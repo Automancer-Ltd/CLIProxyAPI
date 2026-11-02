@@ -1,6 +1,7 @@
 # T3 Code on auto-vps
 
-T3 Code's server runs on auto-vps. Every other machine is a client. Each provider that can go
+T3 Code's main server runs on auto-vps, and every estate machine is also an environment of its own that the
+apps can start threads on (Waseem, 2 Nov 2026, replacing "every other machine is a client"; see Environments below). Each provider that can go
 through the estate hub does: one Claude instance and one Codex instance, both on the hub, never
 several accounts inside T3 (Waseem, 28 Oct 2026, following Theo's advice in
 [theo-gist-2026-10.md](theo-gist-2026-10.md)). Every thread runs in **Full access**.
@@ -144,6 +145,19 @@ T3 session, so it never expires and T3 never asks for approval. The chair wires 
 Antigravity is signed in with Waseem's Google account (checked 28 Oct 2026 22:35: status
 authenticated, a Gemini 3.8 Flash thread answered). If it signs out: Settings → Providers →
 Antigravity → **Sign in**, choose Google, finish in the browser.
+
+## Environments
+
+Each estate machine runs T3 as a background service published on the tailnet at
+`https://<host>.taild6c90e.ts.net:3773` (Tailscale Serve to loopback). auto-vps and auto-vault: `~/.t3`, port 3773.
+auto-hst1: `~/.t3`, port 3773. m6 and omarchy: `~/.t3-service`, port 3774, because a service in the desktop app's
+`~/.t3` stops the app opening ("This T3 home is unavailable"); pass `--base-dir ~/.t3-service` to every `t3` command
+for those. All run the same nightly as auto-vps. Record, open steps and rollback: automancer-ops
+`docs/plans/environments-everywhere.md`; MacBook t13516, WasNewPC t13517.
+
+An app adds a machine under Settings → Environments → Add environment with a pairing link made on that machine
+(`t3 pair`). Agents on auto-vps reach another machine through a linked environment (`t3 environment list`), which needs
+Settings → Labs → Linked environments on at both ends.
 
 ## Clients
 
