@@ -146,13 +146,19 @@ Actual shared-credential callers are covered at these boundaries:
 | Management API calls and usage reads | `api_tools.go` guards token resolution and final transport; required refresh uses Manager |
 | Meta management usage | `usage_refresh.go` calls Manager refresh and parses the encrypted committed mint response; never discards a replacement key |
 | v8 upload/login, metadata/status and removal | Authoritative Store writes; unsupported login/import providers refuse before dispatch; old file download refuses |
-| Codex upstream WebSocket/duplex/reuse/control frames | Guarded dial and every socket write; decoded and queued reads recheck before delivery, including TLS buffering |
+| Codex upstream WebSocket/duplex/reuse/control frames | Live admission at dial and each user request message; local lease/fence/account checks on socket I/O and decoded/queued delivery, including TLS buffering |
 | File watcher, live config mutation, Home, plugins, native CLI login | Not started/refused in shared mode; no alternate credential authority |
 
 A WebSocket session captures the process host, nonce and epoch plus the selected account baseline. A later process
 acquisition cannot authorize an old socket. Authority failure closes and permanently invalidates that connection.
-Messages already dispatched before a loss cannot be recalled; subsequent frames and buffered delivery fail closed.
-These checks read live Tracker state. Their production latency and traffic cost remain part of parent acceptance.
+Live Tracker admission runs at connection opening and each user create, append, steer or interrupt message.
+TLS records, ping/pong, response deltas and buffered delivery check only the immutable locally hydrated view:
+the original process fence, current lease deadline, account status/quarantine/generation and exact record baseline.
+The coordinator loop in `sdk/cliproxy/service_hub.go` updates that view; observed ownership/head loss, failed
+hydration, shutdown or local mutations invalidate it. External control propagation during a turn is bounded by
+that loop's cadence and the conservative lease deadline; a new turn always performs a live check. A failed socket
+check permanently closes the connection. Messages already dispatched cannot be recalled. Parent acceptance still
+owns live latency and failover measurement, but response-frame volume adds no Tracker traffic.
 For HTTP, authorization is at dispatch; this does not claim cancellation of an already accepted provider request.
 
 Native `shared-upstream` config is not machine ownership. Home would add another control plane and is not used.
@@ -248,6 +254,15 @@ reproduces the failure on that head through public `HttpRequest` calls to a synt
 both default and context transports advertised ALPN, used HTTP/2, shared a connection across credentials and
 authorized twice per dispatch. It requires native TLS 1.3/HTTP/1.1 without ALPN, same-credential connection reuse,
 separate connections across credentials, one authorization per dispatch and zero sends after ownership loss.
+
+Independent review of `c765829d890b` found that WebSocket frame checks performed live Tracker reads, coupling
+stream throughput and reliability to control-plane round trips. The corrected session check is local; live
+authorization moved to the user-message boundary. `TestCodexDuplexUsesLocalFrameChecksAndLiveTurnAdmission`
+fails on that head when a synthetic Tracker outage interrupts the first response delta. It now delivers 64 deltas
+plus ping/pong with zero authority calls while the local lease remains valid, admits the next create with one live
+call, and refuses a further create during the outage. Local-view checks cover lease expiry, observed takeover,
+hold, grant/control changes, quarantine, failed hydration and shutdown. Existing tests retain buffered-frame
+refusal, permanent socket failure and rejection of a reacquired epoch.
 
 Initial coverage validation passed on m6: the full hub authority suite with `-race`, the buffered Codex transport checks
 with `-race`, both server/preflight builds, vet and tests for every changed Go package. The standalone preflight

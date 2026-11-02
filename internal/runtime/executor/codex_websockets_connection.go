@@ -91,7 +91,12 @@ func writeWebsocketPayloadMessage(provider string, sess *codexWebsocketSession, 
 	return errSend
 }
 
-func writeCodexWebsocketMessage(sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
+func writeCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
+	if conn != nil {
+		if err := cliproxyauth.AuthorizeHubConn(ctx, conn.UnderlyingConn()); err != nil {
+			return err
+		}
+	}
 	return writeWebsocketPayloadMessage("codex", sess, conn, payload)
 }
 

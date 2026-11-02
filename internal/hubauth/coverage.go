@@ -173,9 +173,12 @@ func (s *Store) refreshStatus(ctx context.Context, a *coreauth.Auth, provider fu
 	return out, nil
 }
 
-// OpenHubSession captures immutable process identity as well as account state.
-// It never upgrades a previously opened connection to a later ownership epoch.
+// OpenHubSession admits a connection with live authority, then returns an I/O-free
+// frame check against the locally hydrated view and its conservative lease deadline.
+// New user turns require Authorize again; frames never wait for Tracker. The
+// captured process fence and account baseline cannot adopt a later grant or epoch.
 func (s *Store) OpenHubSession(ctx context.Context, a *coreauth.Auth) (func(context.Context) error, error) {
+	a = a.Clone()
 	if err := s.Authorize(ctx, a); err != nil {
 		return nil, err
 	}
@@ -185,17 +188,33 @@ func (s *Store) OpenHubSession(ctx context.Context, a *coreauth.Auth) (func(cont
 	}
 	fence := view.fence
 	return func(callCtx context.Context) error {
-		before := s.coordinator.view.Load()
-		if before == nil || before.fence != fence {
-			return ErrUnavailable
-		}
-		if err := s.Authorize(callCtx, a); err != nil {
+		if err := callCtx.Err(); err != nil {
 			return err
 		}
-		after := s.coordinator.view.Load()
-		if after == nil || after.fence != fence {
-			return ErrUnavailable
+		for attempt := 0; attempt < 2; attempt++ {
+			current := s.coordinator.view.Load()
+			if current == nil || current.fence != fence || !s.coordinator.now().Before(current.deadline) {
+				return ErrUnavailable
+			}
+			if s.static[a.ID] == nil {
+				account, ok := current.accounts[a.HubAccountID]
+				if !ok || account.Status != "active" || account.Generation != a.HubGeneration {
+					return ErrUnavailable
+				}
+				if account.Quarantined {
+					return ErrQuarantined
+				}
+				record := current.records[a.HubAccountID]
+				if record.Generation != a.HubGeneration || !bytes.Equal(record.Data, a.HubBaseline) {
+					return ErrUnavailable
+				}
+			}
+			if s.coordinator.view.Load() == current {
+				return nil
+			}
+			// A concurrent heartbeat can replace an equivalent view. Recheck it
+			// locally; a lost fence, changed account or expired lease still refuses.
 		}
-		return nil
+		return ErrUnavailable
 	}, nil
 }

@@ -33,12 +33,13 @@ func GuardHubTransport(base http.RoundTripper, a *Auth) http.RoundTripper {
 }
 
 // HubSessionAuthority binds a connection to its opening process epoch and grant.
-// A later acquisition cannot grant an old socket a new authority.
+// Opening performs live admission; the returned frame check must use only local
+// hydrated state and its lease deadline. A later epoch cannot authorize an old socket.
 type HubSessionAuthority interface {
 	OpenHubSession(context.Context, *Auth) (func(context.Context) error, error)
 }
 
-// GuardHubDial checks before opening a socket and at every network read/write.
+// GuardHubDial admits a socket live, then checks local state at each read/write.
 // Failure is permanent for this connection, including buffered duplex frames.
 func GuardHubDial(ctx context.Context, a *Auth, dial func(context.Context, string, string) (net.Conn, error)) (func(context.Context, string, string) (net.Conn, error), error) {
 	if a == nil || a.HubAuthority == nil {
@@ -48,7 +49,8 @@ func GuardHubDial(ctx context.Context, a *Auth, dial func(context.Context, strin
 	if !ok {
 		return nil, errors.New("hub transport cannot bind a session")
 	}
-	check, err := authority.OpenHubSession(ctx, a.Clone())
+	bound := a.Clone()
+	check, err := authority.OpenHubSession(ctx, bound)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +62,9 @@ func GuardHubDial(ctx context.Context, a *Auth, dial func(context.Context, strin
 		if err != nil {
 			return nil, err
 		}
-		guarded := &hubConn{Conn: conn, ctx: context.WithoutCancel(ctx), check: check}
+		guarded := &hubConn{Conn: conn, ctx: context.WithoutCancel(ctx), check: check, admit: func(turnCtx context.Context) error {
+			return bound.HubAuthority.Authorize(turnCtx, bound)
+		}}
 		if err := guarded.authorize(); err != nil {
 			return nil, err
 		}
@@ -72,6 +76,7 @@ type hubConn struct {
 	net.Conn
 	ctx    context.Context
 	check  func(context.Context) error
+	admit  func(context.Context) error
 	failed atomic.Bool
 }
 
@@ -106,11 +111,35 @@ func (c *hubConn) Read(p []byte) (int, error) {
 }
 
 // CheckHubConn rechecks a decoded or queued frame, even if TLS/websocket buffers
-// satisfied the read without touching the guarded socket. TLS exposes NetConn.
+// satisfied the read without touching the guarded socket. This never performs I/O.
 func CheckHubConn(conn net.Conn) error {
+	if guarded := unwrapHubConn(conn); guarded != nil {
+		return guarded.authorize()
+	}
+	return nil
+}
+
+// AuthorizeHubConn admits a user request message over a retained connection.
+// Protocol traffic (TLS records, deltas, ping/pong) uses CheckHubConn instead.
+func AuthorizeHubConn(ctx context.Context, conn net.Conn) error {
+	if guarded := unwrapHubConn(conn); guarded != nil {
+		if err := guarded.authorize(); err != nil {
+			return err
+		}
+		if err := guarded.admit(ctx); err != nil {
+			guarded.failed.Store(true)
+			_ = guarded.Conn.Close()
+			return err
+		}
+		return guarded.authorize()
+	}
+	return nil
+}
+
+func unwrapHubConn(conn net.Conn) *hubConn {
 	for conn != nil {
 		if guarded, ok := conn.(*hubConn); ok {
-			return guarded.authorize()
+			return guarded
 		}
 		nested, ok := conn.(interface{ NetConn() net.Conn })
 		if !ok {

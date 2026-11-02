@@ -54,8 +54,9 @@ type Coordinator struct {
 }
 
 // Immutable, verified snapshot data. Serving reads this without taking the
-// mutation mutex, and checks the live owner/head with Tracker for every dispatch.
-// It is never a cached serving permission or a grace period for stale controls.
+// mutation mutex. New requests check the live owner/head with Tracker; frames
+// within an admitted session use this view until its lease expires or it is
+// invalidated by observed ownership/control loss. It grants no new request turns.
 type authorizationView struct {
 	fence    Fence
 	head     Head
@@ -67,7 +68,8 @@ type authorizationView struct {
 // Called only under mu. Publish copies so a concurrent refresh cannot mutate a
 // serving reader's account/quarantine state in place.
 func (c *Coordinator) publishAuthorization() {
-	if !c.owned() || !c.state.Ownership.CanServe || c.loaded == nil || !sameHead(*c.loaded, c.state.Head) {
+	o := c.state.Ownership
+	if !c.owned() || !o.CanServe || o.Phase != "serving" || c.loaded == nil || !sameHead(*c.loaded, c.state.Head) || o.HydratedRevision == nil || *o.HydratedRevision != c.loaded.Revision {
 		c.view.Store(nil)
 		return
 	}
@@ -144,6 +146,15 @@ func (c *Coordinator) observe(state State, start time.Time) {
 	}
 	ttl := time.Duration(ttlMS)*time.Millisecond - time.Second
 	c.deadline = start.Add(ttl)
+	// Existing sessions consume the published view without a network read.
+	// Invalidate it as soon as a live observation disproves its ownership or
+	// head, including when subsequent acquisition/hydration cannot complete.
+	if v := c.view.Load(); v != nil {
+		o := state.Ownership
+		if !c.owned() || !o.CanServe || o.Phase != "serving" || !sameHead(v.head, state.Head) || o.HydratedRevision == nil || *o.HydratedRevision != v.head.Revision {
+			c.view.Store(nil)
+		}
+	}
 }
 
 func (c *Coordinator) owned() bool {
@@ -224,7 +235,12 @@ func (c *Coordinator) Step(ctx context.Context) error {
 	return nil
 }
 
-func (c *Coordinator) sync(ctx context.Context) error {
+func (c *Coordinator) sync(ctx context.Context) (err error) {
+	defer func() {
+		if err != nil {
+			c.view.Store(nil)
+		}
+	}()
 	if err := c.stateCall(ctx, "get", struct{}{}); err != nil {
 		return err
 	}
@@ -371,6 +387,7 @@ func (c *Coordinator) authorize(ctx context.Context, id string, generation int64
 		}
 		v := c.view.Load()
 		if v == nil || !sameHead(state.Head, v.head) {
+			c.view.CompareAndSwap(v, nil)
 			// Only changed/unhydrated heads need serialized object/control loading.
 			// The steady request path never enumerates accounts or writes hydration.
 			if attempt != 0 {
@@ -391,6 +408,7 @@ func (c *Coordinator) authorize(ctx context.Context, id string, generation int64
 		}
 		now := c.now()
 		if ttlMS <= 1000 || !now.Before(start.Add(time.Duration(ttlMS)*time.Millisecond-time.Second)) || !now.Before(v.deadline) || !o.Live || !o.CanServe || o.Phase != "serving" || o.Host != v.fence.Host || o.InstanceID != v.fence.InstanceID || o.Epoch != v.fence.Epoch || o.HydratedRevision == nil || *o.HydratedRevision != v.head.Revision {
+			c.view.CompareAndSwap(v, nil)
 			return Record{}, ErrUnavailable
 		}
 		if id == "" {
