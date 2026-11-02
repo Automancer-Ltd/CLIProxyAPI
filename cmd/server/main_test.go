@@ -305,13 +305,16 @@ func TestPersistSeededConfigRefusesConfigThatKeepsPlaintextSecret(t *testing.T) 
 func TestServicePluginHostDropsHostForHubAuthority(t *testing.T) {
 	host := pluginhost.New()
 	guarded := &config.Config{HubAuthority: &config.HubAuthorityConfig{Host: "m6"}}
-	if got := servicePluginHost(guarded, host); got != nil {
-		t.Fatalf("servicePluginHost(guarded) = %v, want nil so the guarded hub can start", got)
+	if got, err := servicePluginHost(guarded, host, false); got != nil || err != nil {
+		t.Fatalf("servicePluginHost(guarded) = %v, %v, want nil host and no error", got, err)
 	}
-	if got := servicePluginHost(&config.Config{}, host); got != host {
-		t.Fatalf("servicePluginHost(plain) = %v, want the bootstrap host", got)
+	if _, err := servicePluginHost(guarded, host, true); err == nil {
+		t.Fatal("guarded mode accepted a process that enabled startup plugins")
 	}
-	if got := servicePluginHost(nil, host); got != host {
-		t.Fatalf("servicePluginHost(nil cfg) = %v, want the bootstrap host", got)
+	if got, err := servicePluginHost(&config.Config{}, host, true); got != host || err != nil {
+		t.Fatalf("servicePluginHost(plain) = %v, %v, want the bootstrap host", got, err)
+	}
+	if got, err := servicePluginHost(nil, host, false); got != host || err != nil {
+		t.Fatalf("servicePluginHost(nil cfg) = %v, %v, want the bootstrap host", got, err)
 	}
 }
