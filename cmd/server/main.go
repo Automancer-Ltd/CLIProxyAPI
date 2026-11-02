@@ -790,7 +790,7 @@ func main() {
 					password = localMgmtPassword
 				}
 
-				cancel, done := cmd.StartServiceBackgroundWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
+				cancel, done := cmd.StartServiceBackgroundWithPluginHost(cfg, configFilePath, password, servicePluginHost(cfg, pluginHost), serverOptions...)
 
 				client := tui.NewClient(cfg.Port, password)
 				ready := false
@@ -836,9 +836,22 @@ func main() {
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
 			misc.StartAntigravityVersionUpdater(context.Background())
 			registry.SetLocalModelCatalogs(localModel)
-			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
+			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, servicePluginHost(cfg, pluginHost), serverOptions...)
 		}
 	}
+}
+
+// servicePluginHost returns the plugin host the proxy service may run with.
+// A hub-authority (guarded) hub must never run dynamic plugins, and its
+// builder refuses any plugin host; the server always constructs one for
+// bootstrap, so a guarded config would fail to start through this entry
+// point. Drop the host for guarded configs and keep the builder's refusal
+// as the backstop for every other path.
+func servicePluginHost(cfg *config.Config, host *pluginhost.Host) *pluginhost.Host {
+	if cfg != nil && cfg.HubAuthority != nil {
+		return nil
+	}
+	return host
 }
 
 // resolveManagementBaseURL determines the management API base URL for TUI client mode.
