@@ -318,6 +318,14 @@ func parseCodexUsage(body gjson.Result) usageResult {
 			result.headers.Set(window.prefix+"reset-after-seconds", formatUsageFloat(after.Float()))
 		}
 	}
+	// The credit balance a Pro or Team account can spend past its included
+	// window (a granted pool such as the ChatGPT Pro credits, t10647). The
+	// listing shows it as usage.balance, which allowances prints.
+	if credits := body.Get("credits"); credits.IsObject() &&
+		credits.Get("has_credits").Bool() && !credits.Get("unlimited").Bool() &&
+		credits.Get("balance").Exists() {
+		result.balance = &usageBalance{Left: credits.Get("balance").Float(), Currency: "credits"}
+	}
 	for _, extra := range body.Get("additional_rate_limits").Array() {
 		for _, key := range []string{"primary_window", "secondary_window"} {
 			if value := extra.Get("rate_limit." + key); value.IsObject() {
