@@ -110,6 +110,12 @@ Coding Plan; the `opencode-go` group (priority 0) registers the same two ids as 
 tier, so the hub spends Z.AI first and OpenCode Go only when the plan refuses. This is how
 t14543 made the paid plan reachable from every lane host (2 Nov 2026).
 
+Priority governs new bindings and failover, not existing sessions. With session affinity on
+(the hub's default), a conversation that fell back to OpenCode Go stays bound to it even after
+Z.AI recovers, until the binding expires (`session-affinity-ttl`, 1h), a failure rebinds it, or
+a new conversation starts. Such a session keeps spending OpenCode Go while the Dispatcher's
+routing table accounts the route to zai — expected, not a bug; the meter shows the truth.
+
 `glm-5.3-flash-oc` remains the explicit OpenCode-only copy for times the estate wants OpenCode Go
 directly. A hub id must not contain a slash when a harness prefixes it
 with a provider name: `opencode run -m <provider>/<id>` splits at the slash, so an id like
@@ -127,10 +133,13 @@ its week resets sooner; it is the priority tier that decides, so a missing `prio
 
 After replacing `config.yaml` by rename (staged file moved over it), confirm the reload actually
 ran: the log line `config file changed, reloading` must appear in `~/Library/Logs/hub.log`. The
-file watcher can miss a rename-deployed config (seen 2 Nov 2026: the registry kept the old model
-lists until the service restarted). If the line is missing, rewrite the same content in place
-(same inode, fires the Write event) or `launchctl kickstart -k gui/$(id -u)/uk.automancer.hub`,
-then re-read `/v8/management/credentials/models`.
+watcher watches the config file itself and never reattaches: a rename-deployed config is a new
+inode the watch does not cover, and no event fires for it (seen 2 Nov 2026: the registry kept
+the old model lists, and even rewriting the new file in place fired nothing, because the watch
+still sat on the replaced inode). When the line is missing, restart —
+`launchctl kickstart -k gui/$(id -u)/uk.automancer.hub` — and then verify the registry actually
+changed by re-reading `/v8/management/credentials/models`; a healthy HTTP 200 alone proves
+nothing about the reload.
 
 ### Rotating the OpenCode Go key
 
