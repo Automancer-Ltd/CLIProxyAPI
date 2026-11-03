@@ -242,7 +242,7 @@ routing:
 | Provider | Endpoint (as CodexBar reads it) | What it reports |
 |---|---|---|
 | Claude | `GET api.anthropic.com/api/oauth/usage`, `anthropic-beta: oauth-2025-04-20` | 5-hour and weekly utilization (percent) and resets; Opus, Sonnet and model-scoped weekly limits (for example "Fable only") |
-| Codex | `GET chatgpt.com/backend-api/wham/usage`, `ChatGPT-Account-Id` | plan, 5-hour and weekly used percent, window length, reset; per-model additional limits |
+| Codex | `GET chatgpt.com/backend-api/wham/usage`, `ChatGPT-Account-Id` | plan, 5-hour and weekly used percent, window length, reset; per-model additional limits; the credit balance (`credits`) as `usage.balance` |
 | Codex banked resets | `GET chatgpt.com/backend-api/wham/rate-limit-reset-credits`, same headers plus `OpenAI-Beta: codex-1` | each available banked reset and its expiry. A failed read keeps the last list |
 | Kimi | `GET api.kimi.com/coding/v1/usages` | membership level (plan); 5-hour, weekly and monthly pools as used ratios, or the older used/limit counts |
 | Grok (`xai`) | `GET cli-chat-proxy.grok.com/v1/billing?format=credits`, `x-xai-token-auth: xai-grok-cli` | subscription tier; credit used percent for the billing period and its end |
@@ -334,6 +334,12 @@ curl -X PATCH "$HUB/v8/management/credentials/fields" \
 
 Remove it again with `"allow_credits": null`. The credential listing shows `"allow_credits": true`
 while it is set. Rolling back the whole guard means deploying the previous binary.
+
+**Granted credit pools** (the ChatGPT Pro Codex credits, a Team workspace's credits) are already
+paid for and expire. With the provider's own top-up off, the grant is its own cap, so a pool like
+that is spent by setting `allow_credits` on the account (t10647): the guard above stops holding
+it out at 100% and consume-first still spends every included window first. The credit balance
+appears in the listing's `usage.balance` (`currency: "credits"`), which `allowances` prints.
 
 **The hub cannot cap credit spend exactly.** It has no single point where every request's cost is
 counted: a failed or cancelled stream, a turn on an open Codex websocket, and the many copies of an
@@ -454,8 +460,8 @@ config-file API keys (`source: "config"`), each with `cooldowns` and `usage`.
 - `usage`: `windows` (each `used_percent`, `window_minutes`, `reset_at`, and a `label` for
   extra windows), `plan`, `fetched_at` and the last poll `error`. Claude and Codex main windows
   come from the live quota headers; the rest from the last refresher poll. `balance` (`left`,
-  `total` when known, `currency`) for DeepSeek and CommandCode; `banked_resets` (each `expires_at`)
-  for Codex
+  `total` when known, `currency`) for DeepSeek and CommandCode, and for a Codex account that
+  holds credits (`currency: "credits"`); `banked_resets` (each `expires_at`) for Codex
 
 Sort by `spent`, then entries with `reset_at` before those without, then `reset_at`, then
 `used_percent`, then `id` to reproduce the router's order within a priority tier.
