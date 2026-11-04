@@ -110,6 +110,7 @@ func run(source, output, authDir string, export bool) error {
 	if err != nil {
 		return err
 	}
+	shared := hubauth.NewStore(coordinator)
 	ctx := context.Background()
 	if err = coordinator.Step(ctx); err != nil {
 		return fmt.Errorf("cannot acquire export authority; keep both hubs stopped and retry")
@@ -118,7 +119,7 @@ func run(source, output, authDir string, export bool) error {
 	if err = coordinator.Recover(ctx); err != nil {
 		return fmt.Errorf("cannot reconcile current snapshot")
 	}
-	records, err := hubauth.NewStore(coordinator).List(ctx)
+	records, err := shared.List(ctx)
 	if err != nil {
 		return fmt.Errorf("cannot read current snapshot")
 	}
