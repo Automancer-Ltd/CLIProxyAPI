@@ -27,7 +27,11 @@ func matchProvider(provider string, targets []string) (string, bool) {
 }
 
 func (w *Watcher) start(ctx context.Context) error {
-	if errAddConfig := w.watcher.Add(w.configPath); errAddConfig != nil {
+	if _, err := os.Stat(w.configPath); err != nil {
+		return err
+	}
+	// A config save may replace its inode; watch the containing directory.
+	if errAddConfig := w.watcher.Add(filepath.Dir(w.configPath)); errAddConfig != nil {
 		log.Errorf("failed to watch config file %s: %v", w.configPath, errAddConfig)
 		return errAddConfig
 	}
@@ -66,7 +70,7 @@ func (w *Watcher) processEvents(ctx context.Context) {
 
 func (w *Watcher) handleEvent(event fsnotify.Event) {
 	// Filter only relevant events: config file or auth-dir JSON files.
-	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename
+	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename | fsnotify.Remove
 	normalizedName := w.normalizeAuthPath(event.Name)
 	normalizedConfigPath := w.normalizeAuthPath(w.configPath)
 	normalizedAuthDir := w.normalizeAuthPath(w.authDir)

@@ -244,6 +244,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
 	// subscribe-config heartbeat connection is healthy.
 	engine.Use(s.homeHeartbeatMiddleware())
+	// Native hubs run only after the external standby handback has completed.
+	// Shared-mode middleware intercepts this route with its fenced readiness.
+	engine.GET("/hub/ready", func(c *gin.Context) { c.JSON(200, gin.H{"serving": true}) })
 	engine.Use(s.exampleAPIKeySafeModeMiddleware())
 
 	// Setup routes

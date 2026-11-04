@@ -131,15 +131,11 @@ credential that took it. Consume-first alone would rank OpenCode Go ahead of Z.A
 its week resets sooner; it is the priority tier that decides, so a missing `priority` on the
 `zai` group silently hands the ids back to OpenCode Go.
 
-After replacing `config.yaml` by rename (staged file moved over it), confirm the reload actually
-ran: the log line `config file changed, reloading` must appear in `~/Library/Logs/hub.log`. The
-watcher watches the config file itself and never reattaches: a rename-deployed config is a new
-inode the watch does not cover, and no event fires for it (seen 2 Nov 2026: the registry kept
-the old model lists, and even rewriting the new file in place fired nothing, because the watch
-still sat on the replaced inode). When the line is missing, restart —
-`launchctl kickstart -k gui/$(id -u)/uk.automancer.hub` — and then verify the registry actually
-changed by re-reading `/v8/management/credentials/models`; a healthy HTTP 200 alone proves
-nothing about the reload.
+The config watcher watches the containing directory, so both atomic replacement and later
+in-place edits reload without a restart. Confirm `config file changed, reloading` in
+`~/Library/Logs/hub.log`, then verify the changed setting or model registry. Shared
+`hub-authority` mode deliberately disables this watcher; use the coordinated restart procedure
+until native-file mode is installed. A healthy HTTP response alone does not prove a reload.
 
 ### Rotating the OpenCode Go key
 
