@@ -131,6 +131,14 @@ credential that took it. Consume-first alone would rank OpenCode Go ahead of Z.A
 its week resets sooner; it is the priority tier that decides, so a missing `priority` on the
 `zai` group silently hands the ids back to OpenCode Go.
 
+Native-file failover and its migration/rollback are documented in
+[ops hub-failover.md](https://github.com/Automancer-Ltd/automancer-ops/blob/main/docs/hub-failover.md).
+The one-shot `go run ./cmd/hub-native -config <shared config> -output <new directory>` exporter
+runs only after both old provider processes are disabled and stopped, on their last owner's host.
+It recovers that host's local spool and emits a manifest with active, held, quarantined and disabled
+counts, without account identities. Shared rollback is safe only before the first native refresh;
+afterward fix forward or reauthenticate. Preserve current native files and all old snapshots.
+
 The config watcher watches the containing directory, so both atomic replacement and later
 in-place edits reload without a restart. Confirm `config file changed, reloading` in
 `~/Library/Logs/hub.log`, then verify the changed setting or model registry. Shared
