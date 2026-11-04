@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -56,6 +57,12 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 	}
 	if generated.Content[0].Kind != yaml.MappingNode {
 		return fmt.Errorf("expected generated root mapping node")
+	}
+	// Startup resolves "~" in auth-dir in memory. Keep the written form when it names
+	// the same directory, so a config mirrored to another host stays portable.
+	if onDisk, current := yamlPath(original.Content[0], "auth-dir"), yamlPath(generated.Content[0], "auth-dir"); onDisk != nil && current != nil &&
+		onDisk.Kind == yaml.ScalarNode && expandHomeDir(onDisk.Value) == filepath.Clean(current.Value) {
+		current.Value = onDisk.Value
 	}
 
 	// Keep obsolete roots until v8 migration can preserve them as comments.
@@ -122,6 +129,18 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 		cfg.OAuthOnlyFields = migrated.OAuthOnlyFields
 	}
 	return nil
+}
+
+// expandHomeDir mirrors util.ResolveAuthDir, which config cannot import.
+func expandHomeDir(dir string) string {
+	if !strings.HasPrefix(dir, "~") {
+		return filepath.Clean(dir)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Clean(filepath.Join(home, filepath.FromSlash(strings.ReplaceAll(strings.TrimLeft(strings.TrimPrefix(dir, "~"), "/\\"), "\\", "/"))))
 }
 
 // SaveConfigPreserveCommentsUpdateNestedScalar updates a nested scalar key path like ["a","b"]
