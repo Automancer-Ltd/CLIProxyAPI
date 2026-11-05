@@ -195,9 +195,9 @@ Home is not enabled on m6 (the live config has no `home` section, read 5 Nov 202
 guarded anyway.
 
 Exhaustion never falls back elsewhere: a paired key cannot reach Claude or any other provider, so
-a spent Antigravity pool answers with Antigravity's own error. Keep
-`oauth.providers.antigravity.antigravity-credits: false` so a spent pool is not refilled from
-paid credits (it was `true` on m6 on 5 Nov 2026).
+a spent Antigravity pool answers with Antigravity's own error. Whether a spent pool may be
+refilled from paid credits is the separate `oauth.providers.antigravity.antigravity-credits`
+setting, which this pairing does not change.
 
 agy names its models without effort and sends the effort in the request
 (`generationConfig.thinkingConfig.thinkingLevel`, `LOW`/`MEDIUM`/`HIGH`; captured from agy 1.5.1
@@ -217,12 +217,22 @@ In Gemini API-key mode agy lists only Gemini models. Claude through agy uses the
 (`claude-opus-5-5-high`, `claude-sonnet-5-5-high`); agy sends the effort, so run Sonnet with
 `--effort medium` and Opus with `--effort high`. Do not alias a plain Claude id
 (`claude-opus-5-5`) onto Antigravity: if the list were emptied, ordinary Claude traffic for that
-id would rotate onto Antigravity. agy 1.5.1 reaches such a model only as a custom model,
-`gemini-api://<host:port>/models/<id>`, and sends it to
-`<base>/v1beta/models/<host:port>/models/<id>:streamGenerateContent` (captured 5 Nov 2026), a path
-the hub does not route. Forms with a scheme (`gemini-api://http://...`) failed with 404 before
-reaching the endpoint. Claude through agy is therefore not working yet; it needs either agy
-custom-model settings that produce `/v1beta/models/<id>`, or a hub route for that path.
+id would rotate onto Antigravity.
+
+agy 1.5.1 reaches such a model through its bare custom-model form, with no host in it:
+
+```sh
+GEMINI_API_KEY=<agy's key> GOOGLE_GEMINI_BASE_URL=<hub base URL> \
+  agy --settings '{"modelProvider":"gemini"}' --model gemini-api://claude-sonnet-5-5-high --effort medium
+```
+
+agy sends that to `<base>/v1beta/models/claude-sonnet-5-5-high:streamGenerateContent?alt=sse` with
+`thinkingLevel: MEDIUM`; `gemini-api://claude-opus-5-5-high --effort high` sends `HIGH` (captured 5
+Nov 2026). The hub's ordinary Gemini route serves it, so the pairing applies unchanged. Do not put
+a host in the form: `gemini-api://<host:port>/models/<id>` is sent as model `<host:port>/models/<id>`.
+`modelProvider: gemini` can live in agy's `~/.gemini/antigravity-cli/settings.json`; the custom
+model must be passed with `--model` (a `model` setting is ignored for it), and `--effort` works only
+on the command line.
 
 ## Local models: one model at a time
 
