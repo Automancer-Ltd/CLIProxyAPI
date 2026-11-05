@@ -1543,6 +1543,43 @@ func modelRegistrationAvailability(registration *ModelRegistration, now time.Tim
 
 // GetAvailableModelInfos returns cloned metadata for all currently available models.
 func (r *ModelRegistry) GetAvailableModelInfos() []*ModelInfo {
+	return r.GetAvailableModelInfosWhere(nil)
+}
+
+// providersServing lists the providers that currently supply a registration.
+func providersServing(registration *ModelRegistration) []string {
+	providers := make([]string, 0, len(registration.Providers))
+	for name, count := range registration.Providers {
+		if count > 0 {
+			providers = append(providers, name)
+		}
+	}
+	return providers
+}
+
+// GetAvailableModelsWhere is GetAvailableModels limited to models for which keep accepts
+// the providers serving them, decided in the same registry snapshot that builds the list.
+// It bypasses the per-handler cache.
+func (r *ModelRegistry) GetAvailableModelsWhere(handlerType string, keep func(providers []string) bool) []map[string]any {
+	now := time.Now()
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	models := make([]map[string]any, 0, len(r.models))
+	for _, registration := range r.models {
+		available, _ := modelRegistrationAvailability(registration, now)
+		if !available || registration == nil || !keep(providersServing(registration)) {
+			continue
+		}
+		if model := r.convertModelToMap(registration.Info, handlerType); model != nil {
+			models = append(models, model)
+		}
+	}
+	return models
+}
+
+// GetAvailableModelInfosWhere is GetAvailableModelInfos limited as GetAvailableModelsWhere
+// is; a nil keep accepts every model.
+func (r *ModelRegistry) GetAvailableModelInfosWhere(keep func(providers []string) bool) []*ModelInfo {
 	now := time.Now()
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
@@ -1551,6 +1588,9 @@ func (r *ModelRegistry) GetAvailableModelInfos() []*ModelInfo {
 	for _, registration := range r.models {
 		available, _ := modelRegistrationAvailability(registration, now)
 		if !available || registration == nil || registration.Info == nil {
+			continue
+		}
+		if keep != nil && !keep(providersServing(registration)) {
 			continue
 		}
 		result = append(result, cloneModelInfo(registration.Info))

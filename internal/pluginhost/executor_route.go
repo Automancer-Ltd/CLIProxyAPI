@@ -84,7 +84,7 @@ func (h *Host) PluginExecutorRequestToFormat(pluginID string, req coreexecutor.R
 
 // ExecutePluginExecutor executes a request with the named plugin executor without changing the requested model.
 func (h *Host) ExecutePluginExecutor(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
-	adapter, errAdapter := h.executorAdapterForPlugin(pluginID)
+	adapter, errAdapter := h.admittedExecutorAdapter(ctx, pluginID)
 	if errAdapter != nil {
 		return coreexecutor.Response{}, errAdapter
 	}
@@ -93,7 +93,7 @@ func (h *Host) ExecutePluginExecutor(ctx context.Context, pluginID string, req c
 
 // ExecutePluginExecutorStream executes a streaming request with the named plugin executor without changing the requested model.
 func (h *Host) ExecutePluginExecutorStream(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
-	adapter, errAdapter := h.executorAdapterForPlugin(pluginID)
+	adapter, errAdapter := h.admittedExecutorAdapter(ctx, pluginID)
 	if errAdapter != nil {
 		return nil, errAdapter
 	}
@@ -102,11 +102,25 @@ func (h *Host) ExecutePluginExecutorStream(ctx context.Context, pluginID string,
 
 // CountPluginExecutor executes a count-tokens request with the named plugin executor without changing the requested model.
 func (h *Host) CountPluginExecutor(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
-	adapter, errAdapter := h.executorAdapterForPlugin(pluginID)
+	adapter, errAdapter := h.admittedExecutorAdapter(ctx, pluginID)
 	if errAdapter != nil {
 		return coreexecutor.Response{}, errAdapter
 	}
 	return adapter.CountTokens(ctx, (*coreauth.Auth)(nil), req, opts)
+}
+
+// admittedExecutorAdapter resolves a direct plugin executor route and applies the
+// Antigravity pairing to the plugin's provider identifier, like any upstream attempt.
+func (h *Host) admittedExecutorAdapter(ctx context.Context, pluginID string) (*executorAdapter, error) {
+	adapter, errAdapter := h.executorAdapterForPlugin(pluginID)
+	if errAdapter != nil {
+		return nil, errAdapter
+	}
+	// A nil Manager still applies the role the request carries.
+	if errAdmit := h.authManager.AdmitProvider(ctx, adapter.provider); errAdmit != nil {
+		return nil, errAdmit
+	}
+	return adapter, nil
 }
 
 func (h *Host) executorAdapterForPlugin(pluginID string) (*executorAdapter, error) {

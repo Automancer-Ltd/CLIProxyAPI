@@ -1060,6 +1060,10 @@ type OpenAICompatibility struct {
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+
+	// OneModelAtATime refuses (503) a request for one of this group's models while a request
+	// for a different model of the group is in flight, for a GPU host that swaps models.
+	OneModelAtATime bool `yaml:"one-model-at-a-time,omitempty" json:"one-model-at-a-time,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.

@@ -145,6 +145,137 @@ in-place edits reload without a restart. Confirm `config file changed, reloading
 `hub-authority` mode deliberately disables this watcher; use the coordinated restart procedure
 until native-file mode is installed. A healthy HTTP response alone does not prove a reload.
 
+## Antigravity is agy's alone (t15617)
+
+Waseem's Antigravity allowance is spent only by agy (decision 2.5 B). agy runs in API-key mode
+(`GOOGLE_GEMINI_BASE_URL` at the hub, settings `modelProvider: gemini`) with its own client key,
+listed under `access.antigravity-keys`:
+
+```yaml
+access:
+  api-keys:
+    - "<the existing client key>"
+  antigravity-keys:
+    - "<agy's key>"      # accepted like an api-keys entry; do not repeat it there
+```
+
+Each client key gets a provider-access role once, when it authenticates, from the same config
+snapshot that accepted it. The request carries that role for its whole life, so a config reload
+mid-request cannot widen it, and a key removed from the list is refused rather than turned into
+an ordinary key. While the list has any key:
+
+- **A paired key reaches Antigravity only.** Every listing (`/v1/models`, `/v1/models/<id>`,
+  `/v1beta/models` and its single-model read, the Claude, Codex, Grok and Home catalogs) shows it
+  only models Antigravity serves. A request for a model Antigravity does not serve is refused with
+  403 `model_not_allowed` ("this API key reaches Antigravity only ..."). A model Claude and
+  Antigravity both serve goes to Antigravity, never a Claude account.
+- **Every other key never reaches Antigravity.** Models only Antigravity serves are not listed
+  for it, and a request for one is refused with 403 `model_not_allowed` ("model ... is served
+  only to the Antigravity client key"). A model another provider also serves goes to that
+  provider.
+- **A request with no role fails closed.** Internal callers, management calls and
+  `VerifyInference` (the management "test this credential" call) carry no client key, so they
+  never reach Antigravity while the list has a key. Verifying an Antigravity credential then
+  answers 403; empty the list for that check, or verify through agy.
+
+One check at the attempt boundary enforces the role: every upstream attempt passes it, whatever
+picked the credential (native routing, Home dispatch and its credits path, session-affinity
+bindings, retries, websocket, plugin executors, count-tokens, `HttpRequest`). A refusal there is
+request-scoped, so it never cools the credential down. Selection applies the same role first, so
+a client sees a clean 403 instead of a failed attempt. Catalogs filter on the provider that serves
+each model, in the registry's own snapshot, before any id rewrite (the Claude catalog renames
+non-Claude ids), and again after interceptors, recomputing `first_id`/`last_id`. A catalog that
+cannot be read under a restricted role is served empty. An empty or missing list turns all of
+this off. The list is hot-reloaded with the rest of the config, and keys are never logged. Tests:
+`go test ./sdk/cliproxy/auth -run TestAntigravityPairing`, `./sdk/api/handlers -run
+TestModelCatalogsFollowAntigravityPairing`, `./internal/access/config_access`, `./internal/api -run
+TestAuthMiddlewareCarriesProviderAccess`, `./internal/pluginhost -run AntigravityPairing`.
+
+Home is not enabled on m6 (the live config has no `home` section, read 5 Nov 2026); its paths are
+guarded anyway.
+
+Exhaustion never falls back elsewhere: a paired key cannot reach Claude or any other provider, so
+a spent Antigravity pool answers with Antigravity's own error. Keep
+`oauth.providers.antigravity.antigravity-credits: false` so a spent pool is not refilled from
+paid credits (it was `true` on m6 on 5 Nov 2026).
+
+agy names its models without effort and sends the effort in the request
+(`generationConfig.thinkingConfig.thinkingLevel`, `LOW`/`MEDIUM`/`HIGH`; captured from agy 1.5.1
+on 5 Nov 2026). It also sends a side request for `gemini-3.1-flash-lite-preview`. Antigravity's
+hub ids carry `-high` but take the effort from the request, so aliases are all agy needs:
+
+```yaml
+oauth:
+  model-alias:
+    antigravity:
+      - {name: gemini-3.8-flash-high, alias: gemini-3.8-flash, fork: true}
+      - {name: gemini-4-argon-high, alias: gemini-4-argon, fork: true}
+      - {name: gemini-3.1-flash-lite, alias: gemini-3.1-flash-lite-preview, fork: true}
+```
+
+In Gemini API-key mode agy lists only Gemini models. Claude through agy uses the hub's ids
+(`claude-opus-5-5-high`, `claude-sonnet-5-5-high`); agy sends the effort, so run Sonnet with
+`--effort medium` and Opus with `--effort high`. Do not alias a plain Claude id
+(`claude-opus-5-5`) onto Antigravity: if the list were emptied, ordinary Claude traffic for that
+id would rotate onto Antigravity. agy 1.5.1 reaches such a model only as a custom model,
+`gemini-api://<host:port>/models/<id>`, and sends it to
+`<base>/v1beta/models/<host:port>/models/<id>:streamGenerateContent` (captured 5 Nov 2026), a path
+the hub does not route. Forms with a scheme (`gemini-api://http://...`) failed with 404 before
+reaching the endpoint. Claude through agy is therefore not working yet; it needs either agy
+custom-model settings that produce `/v1beta/models/<id>`, or a hub route for that path.
+
+## Local models: one model at a time
+
+An OpenAI-compatible group with `one-model-at-a-time: true` serves one upstream model at a time:
+while a request for one model is in flight on the group, an attempt for a different model is
+refused with 503 ("local serves one model at a time and is busy with ..."). Attempts for the
+same upstream model pass, whatever alias they used. The GPU host swaps models in and out of
+memory, so a second model would evict the first mid-answer (Waseem, 5 Nov 2026). The gate holds
+only the group actually picked for the attempt, from the attempt boundary until the answer ends
+(a stream until it is drained, also after an error or panic). Its refusal is request-scoped, so
+it never cools the credential down and another group serving the same alias can still take the
+request. Two groups that each set it are gated separately. Token counts are not gated. Test: `go
+test ./sdk/cliproxy/auth -run TestOneModelAtATime`.
+
+Decision 2.2 A routes the hub straight to the GPU PC over the tailnet. Before it, the `local`
+group's `base-url` was `http://automancer-vps:8100/v1`, a Caddy router on auto-vps that forwards
+to `https://omarchy.taild6c90e.ts.net` (Linux boot) then `https://wasnewpc.taild6c90e.ts.net`
+(Windows boot) of the same PC. Proposed group (not applied; the gateway key is unchanged):
+
+```diff
+   openai-compatibility:
+     - name: local
+-      base-url: http://automancer-vps:8100/v1
++      base-url: https://wasnewpc.taild6c90e.ts.net/v1
++      one-model-at-a-time: true
+       models:
+-        - name: gemma-26b
+-          alias: local/gemma-26b
+         - name: qwen3.8-27b
+           alias: local/qwen3.8-27b
+         - name: qwen3.8-flash-next
+           alias: local/qwen3.8-flash-next
+-        - name: lfm2.5-8b-a1b
+-          alias: local/lfm2.5-8b-a1b
+       keys:
+         - api-key: <unchanged>
++    - name: local-omarchy
++      base-url: https://omarchy.taild6c90e.ts.net/v1
++      one-model-at-a-time: true
++      models:
++        - name: qwen3.8-27b
++          alias: local/qwen3.8-27b
++        - name: qwen3.8-flash-next
++          alias: local/qwen3.8-flash-next
++      keys:
++        - api-key: <the same key>
+```
+
+The two groups share the aliases, so whichever boot is up serves them. `gemma-26b` is dropped:
+m6's `hub.log` (back to 26 Oct 2026) has no request for it. `lfm2.5-8b-a1b` is not on the gateway. The gateway refuses new
+work with 503 `gateway_desk_busy` while Waseem is using the PC, including `/v1/models`; its open
+`GET /status/models` lists the catalogue at any time.
+
 ### Rotating the OpenCode Go key
 
 `AUT_OPENCODE_GO_API_KEY` in BWS is the estate's source of truth for the key. The hub keeps its
@@ -171,7 +302,7 @@ The proxy already records the quota headers each account returned on its last re
 Among the accounts that can serve the request right now (not cooling down after a 429, not
 disabled, not held, matching any pin), it picks the first by:
 
-1. **Not spent before spent.** An account is spent when any observed window (5-hour or weekly) is
+1. **Not spent before spent.** An account is spent when any observed window (5-hour, daily or weekly) is
    at 95% or more. Spent accounts are still used as a last resort until a window reaches 100%;
    then the paid-credits guard (below) removes them.
 2. **Known reset before unknown.** The rank uses the account's longest window: weekly for Claude
@@ -236,6 +367,14 @@ routing:
   login is marked `unauthorized`, as a refused refresh on a request would mark it (t10411).
 - Claude and Codex readings are stored as the same quota headers their responses carry, so
   consume-first ranks idle accounts on them. A poll never replaces newer headers from traffic.
+  Devin readings are stored as the daily and weekly signals its executor records, so a Devin
+  window at 95% is spent and one at 100% is held out by the paid-credits guard, as for Claude and
+  Codex (t15619). A window Devin reports without a reset time is ignored. Each reading replaces
+  the previous Devin observation whole, so an old reset never pairs with a new percentage, and it
+  reaches the routing scheduler at once.
+- The plan is read fresh on every poll. Devin reports the plan of the current billing period:
+  on 5 Nov 2026 it still said "Max" with the period ending 10 Nov 2026 18:24 UTC, after Waseem
+  downgraded to Pro, so the downgrade shows from then.
 - The last reading of every account is written to `<auth-dir>/usage-snapshot.cache` (not `.json`,
   so the watcher never loads it as a credential). It holds figures only, no tokens. After a
   restart it is read back, so the router order is known immediately. The Postgres store clears

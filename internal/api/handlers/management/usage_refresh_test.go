@@ -96,7 +96,8 @@ func TestUsageParsersReadProviderShapes(t *testing.T) {
 	}
 
 	devin := coreauth.QuotaUsageWindows(coreauth.QuotaState{Signals: map[string]string{
-		"daily_quota_remaining_percent": "75%", "weekly_quota_remaining_percent": "40%", "weekly_quota_reset_at": "2100-01-01T00:00:00Z"}})
+		"daily_quota_remaining_percent": "75%", "daily_quota_reset_at": "2099-12-31T00:00:00Z",
+		"weekly_quota_remaining_percent": "40%", "weekly_quota_reset_at": "2100-01-01T00:00:00Z"}})
 	if len(devin) != 2 || devin[0].UsedPercent != 25 || devin[1].UsedPercent != 60 || devin[1].ResetAt.IsZero() {
 		t.Fatalf("devin = %+v", devin)
 	}
@@ -127,6 +128,39 @@ func TestUsageParsersReadProviderShapes(t *testing.T) {
 	} {
 		if tc.result.plan != tc.plan || fmt.Sprint(tc.result.windows) != fmt.Sprint(tc.want) {
 			t.Errorf("%s = %q %+v, want %q %+v", tc.name, tc.result.plan, tc.result.windows, tc.plan, tc.want)
+		}
+	}
+}
+
+// A Devin poll that reads an exhausted weekly window makes the account spent for the
+// router, not only on the dashboard, and that survives a restart (t15619).
+func TestUsageRefreshDevinExhaustedWindowIsSpent(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	now := time.Now()
+	weeklyReset := now.Add(48 * time.Hour).UTC().Truncate(time.Second)
+	original := usageFetchers["devin"]
+	t.Cleanup(func() { usageFetchers["devin"] = original })
+	usageFetchers["devin"] = func(context.Context, *http.Client, *coreauth.Auth, string) (usageResult, error) {
+		return devinUsage(&devinauth.DevinUserStatus{Plan: "Pro", DailyQuotaRemainingPercent: 100,
+			DailyQuotaResetAt: now.Add(12 * time.Hour).UTC(), WeeklyQuotaResetAt: weeklyReset}), nil
+	}
+	cfg := &config.Config{AuthDir: t.TempDir()}
+	cfg.Routing.UsageRefresh.Interval = "10m"
+	for _, at := range []time.Time{now, now.Add(time.Minute)} { // the second pass is a restart
+		manager := coreauth.NewManager(nil, nil, nil)
+		if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+			ID: "devin-a.json", Provider: "devin", Metadata: map[string]any{"session_token": "devin-session-token$x"},
+		}); errRegister != nil {
+			t.Fatalf("register: %v", errRegister)
+		}
+		h := NewHandlerWithoutConfigFilePath(cfg, manager)
+		h.refreshUsage(context.Background(), at)
+		auth, _ := manager.GetByID("devin-a.json")
+		if _, used, spent := coreauth.ConsumeFirstStanding(auth, now); !spent || used != 100 {
+			t.Fatalf("standing at %v = used %v spent %v; want 100 and spent", at, used, spent)
+		}
+		if plan := h.usageEntry(auth)["plan"]; plan != "Pro" {
+			t.Fatalf("plan = %v, want the polled Pro", plan)
 		}
 	}
 }

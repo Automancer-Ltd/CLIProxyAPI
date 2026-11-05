@@ -225,6 +225,9 @@ type Manager struct {
 	// It is initialized in NewManager; never Load() before first Store().
 	runtimeConfig atomic.Value
 
+	// oneModel serves one model at a time on one-model-at-a-time OpenAI-compatible groups.
+	oneModel oneModelGate
+
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
 

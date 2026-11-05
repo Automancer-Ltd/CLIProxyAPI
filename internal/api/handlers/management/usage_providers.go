@@ -37,6 +37,8 @@ type usageResult struct {
 	plan    string
 	windows []coreauth.UsageWindow
 	headers http.Header
+	// signals are quota signals in the credential's own format (Devin), observed like headers.
+	signals map[string]string
 	balance *usageBalance
 	// banked is read only when bankedRead is set, so a failed read keeps the
 	// last known list.
@@ -500,7 +502,7 @@ func parseCodexResetCredits(body gjson.Result, now time.Time) []usageCredit {
 // devinUsage turns Devin's remaining percentages into windows. A window with no
 // reset time was not reported: its remaining 0 is protobuf's default, not spent.
 func devinUsage(status *devinauth.DevinUserStatus) usageResult {
-	result := usageResult{plan: status.Plan}
+	result := usageResult{plan: status.Plan, signals: status.QuotaSignals()}
 	for _, window := range []struct {
 		left    int64
 		minutes float64

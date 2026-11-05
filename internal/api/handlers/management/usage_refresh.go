@@ -132,7 +132,12 @@ func (h *Handler) refreshUsage(ctx context.Context, now time.Time) {
 		if observes && len(record.Signals) > 0 {
 			// Credentials register after startup, so restoring is retried each pass;
 			// ObserveQuota ignores it once newer headers exist.
-			h.authManager.ObserveQuota(auth.ID, signalHeaders(record.Signals), record.ObservedAt)
+			if strings.EqualFold(auth.Provider, "devin") {
+				// Devin's signals are not headers; restore them as recorded.
+				h.authManager.ObserveQuotaSignals(auth.ID, record.Signals, record.ObservedAt)
+			} else {
+				h.authManager.ObserveQuota(auth.ID, signalHeaders(record.Signals), record.ObservedAt)
+			}
 		}
 		kind := usageKind(auth)
 		fetch := usageFetchers[kind]
@@ -212,6 +217,9 @@ func (h *Handler) pollUsage(ctx context.Context, auth *coreauth.Auth, fetch usag
 	}
 	if len(result.headers) > 0 {
 		h.authManager.ObserveQuota(auth.ID, result.headers, now)
+	}
+	if len(result.signals) > 0 {
+		h.authManager.ObserveQuotaSignals(auth.ID, result.signals, now)
 	}
 	record.Plan, record.Windows, record.Balance, record.FetchedAt, record.Error = result.plan, result.windows, result.balance, now, ""
 	if result.bankedRead {

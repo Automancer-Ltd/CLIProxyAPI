@@ -133,6 +133,10 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, false)
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
+	normalized, errPairing := m.antigravityPairingProviders(ctx, normalized, authSelectionModelFromOptions(opts, req.Model))
+	if errPairing != nil {
+		return cliproxyexecutor.Response{}, errPairing
+	}
 	if errPin := m.accountPinRefusal(normalized, authSelectionModelFromOptions(opts, req.Model), opts); errPin != nil {
 		return cliproxyexecutor.Response{}, errPin
 	}
@@ -198,6 +202,10 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, true)
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
+	normalized, errPairing := m.antigravityPairingProviders(ctx, normalized, authSelectionModelFromOptions(opts, req.Model))
+	if errPairing != nil {
+		return cliproxyexecutor.Response{}, errPairing
+	}
 	if errPin := m.accountPinRefusal(normalized, authSelectionModelFromOptions(opts, req.Model), opts); errPin != nil {
 		return cliproxyexecutor.Response{}, errPin
 	}
@@ -258,6 +266,11 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 	if !m.HomeEnabled() {
+		var errPairing error
+		normalized, errPairing = m.antigravityPairingProviders(ctx, normalized, authSelectionModelFromOptions(opts, req.Model))
+		if errPairing != nil {
+			return nil, errPairing
+		}
 		if errPin := m.accountPinRefusal(normalized, authSelectionModelFromOptions(opts, req.Model), opts); errPin != nil {
 			return nil, errPin
 		}
@@ -2107,6 +2120,9 @@ func (m *Manager) PrepareHttpRequest(ctx context.Context, auth *Auth, req *http.
 	if err := m.AuthorizeHub(req.Context(), auth); err != nil {
 		return err
 	}
+	if err := m.AdmitProvider(req.Context(), auth.Provider); err != nil {
+		return err
+	}
 	return preparer.PrepareRequest(req, auth)
 }
 
@@ -2156,6 +2172,9 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
 	}
 	if err := m.AuthorizeHub(ctx, auth); err != nil {
+		return nil, err
+	}
+	if err := m.AdmitProvider(ctx, auth.Provider); err != nil {
 		return nil, err
 	}
 	return exec.HttpRequest(ctx, auth, req)
