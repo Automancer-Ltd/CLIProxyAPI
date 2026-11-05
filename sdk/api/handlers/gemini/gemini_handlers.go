@@ -108,7 +108,7 @@ func (h *GeminiAPIHandler) GeminiGetHandler(c *gin.Context) {
 		}
 	}
 
-	if targetModel != nil {
+	if targetModel != nil && handlers.ModelVisibleToKey(c.Request.Context(), action) {
 		// Ensure the name has 'models/' prefix in the output if it's a Gemini model
 		if name, ok := targetModel["name"].(string); ok && name != "" && !strings.HasPrefix(name, "models/") {
 			targetModel["name"] = "models/" + name

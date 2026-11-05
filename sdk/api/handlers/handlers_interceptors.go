@@ -693,6 +693,10 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 		}
 	}
 
+	if c.Request != nil {
+		body = filterModelListForKey(c.Request.Context(), body)
+	}
+
 	rawResponseHeaders := http.Header{
 		"Content-Type": []string{"application/json; charset=utf-8"},
 	}

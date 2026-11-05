@@ -41,6 +41,29 @@ type DevinUserStatus struct {
 	PlanEnd                     time.Time `json:"plan_end,omitempty"`
 }
 
+// QuotaSignals returns the status as the quota signals a Devin credential carries:
+// plan, daily and weekly remaining percent with their resets, and the plan period.
+func (s *DevinUserStatus) QuotaSignals() map[string]string {
+	signals := map[string]string{
+		"daily_quota_remaining_percent":  fmt.Sprintf("%d%%", s.DailyQuotaRemainingPercent),
+		"weekly_quota_remaining_percent": fmt.Sprintf("%d%%", s.WeeklyQuotaRemainingPercent),
+	}
+	if s.Plan != "" {
+		signals["plan"] = s.Plan
+	}
+	for key, at := range map[string]time.Time{
+		"daily_quota_reset_at":  s.DailyQuotaResetAt,
+		"weekly_quota_reset_at": s.WeeklyQuotaResetAt,
+		"plan_start":            s.PlanStart,
+		"plan_end":              s.PlanEnd,
+	} {
+		if !at.IsZero() {
+			signals[key] = at.Format(time.RFC3339)
+		}
+	}
+	return signals
+}
+
 // GenerateDeviceFingerprint generates a 732-character hex device fingerprint.
 // When seed is empty, it generates a cryptographically random 732-character hex string per request.
 // When seed is provided, it derives a deterministic 732-character hex fingerprint.

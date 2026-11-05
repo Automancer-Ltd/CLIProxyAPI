@@ -120,7 +120,7 @@ func consumeFirstRankOf(auth *Auth, now time.Time) consumeFirstRank {
 	return rank
 }
 
-// quotaWindowsFromSignals reads the Claude and Codex usage windows from a quota
+// quotaWindowsFromSignals reads the Claude, Codex and Devin usage windows from a quota
 // observation snapshot. Used figures are percentages (0-100).
 func quotaWindowsFromSignals(signals map[string]string, observedAt time.Time) []quotaWindow {
 	if len(signals) == 0 {
@@ -164,6 +164,16 @@ func quotaWindowsFromSignals(signals map[string]string, observedAt time.Time) []
 			resetAt = observedAt.Add(time.Duration(after * float64(time.Second)))
 		}
 		add(quotaWindow{used: used, minutes: minutes, resetAt: resetAt})
+	}
+	// Devin records remaining percent and RFC3339 resets under its own keys.
+	for _, devin := range []struct {
+		key     string
+		minutes float64
+	}{{"daily", 24 * 60}, {"weekly", 7 * 24 * 60}} {
+		if remaining, ok := devinRemainingPercent(signals[devin.key+"_quota_remaining_percent"]); ok {
+			resetAt, _ := time.Parse(time.RFC3339, signals[devin.key+"_quota_reset_at"])
+			add(quotaWindow{used: float64(100 - remaining), minutes: devin.minutes, resetAt: resetAt})
+		}
 	}
 	return windows
 }

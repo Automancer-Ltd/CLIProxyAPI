@@ -145,6 +145,105 @@ in-place edits reload without a restart. Confirm `config file changed, reloading
 `hub-authority` mode deliberately disables this watcher; use the coordinated restart procedure
 until native-file mode is installed. A healthy HTTP response alone does not prove a reload.
 
+## Antigravity is agy's alone (t15617)
+
+Waseem's Antigravity allowance is spent only by agy (decision 2.5 B). agy runs in API-key mode
+(`GOOGLE_GEMINI_BASE_URL` at the hub, settings `modelProvider: gemini`) with its own client key,
+listed under `access.antigravity-keys`:
+
+```yaml
+access:
+  api-keys:
+    - "<the existing client key>"
+  antigravity-keys:
+    - "<agy's key>"      # accepted like an api-keys entry; do not repeat it there
+```
+
+While the list has any key:
+
+- **A paired key reaches Antigravity only.** Every listing (`/v1/models`, `/v1/models/<id>`,
+  `/v1beta/models` and its single-model read, the Claude and Codex catalogs) shows it only models
+  Antigravity serves. A request for a model Antigravity does not serve is refused with 403
+  `model_not_allowed` ("this API key reaches Antigravity only ..."). A model Claude and
+  Antigravity both serve goes to Antigravity, never a Claude account.
+- **Every other key never reaches Antigravity.** Models only Antigravity serves are not listed
+  for it, and a request for one is refused with 403 `model_not_allowed` ("model ... is served
+  only to the Antigravity client key"). A model another provider also serves goes to that
+  provider. Requests with no client key (internal callers) count as other keys.
+
+The check sits in auth selection, so it covers every path, including session-affinity bindings,
+retries, Codex live and alpha search. An empty or missing list turns it off. The list is
+hot-reloaded with the rest of the config, and keys are never logged. Test: `go test
+./sdk/cliproxy/auth -run TestAntigravityPairing`, `./sdk/api/handlers -run
+TestModelListingFollowsAntigravityPairing`, `./internal/access/config_access`.
+
+agy names its models without effort and sends the effort in the request
+(`generationConfig.thinkingConfig.thinkingLevel`, `LOW`/`MEDIUM`/`HIGH`; captured from agy 1.5.1
+on 5 Nov 2026). It also sends a side request for `gemini-3.1-flash-lite-preview`. Antigravity's
+hub ids carry `-high` but take the effort from the request, so aliases are all agy needs:
+
+```yaml
+oauth:
+  model-alias:
+    antigravity:
+      - {name: gemini-3.8-flash-high, alias: gemini-3.8-flash, fork: true}
+      - {name: gemini-4-argon-high, alias: gemini-4-argon, fork: true}
+      - {name: gemini-3.1-flash-lite, alias: gemini-3.1-flash-lite-preview, fork: true}
+```
+
+In Gemini API-key mode agy lists only Gemini models. Claude through agy needs an agy custom
+model; name it with the hub's id (`claude-opus-5-5-high`, `claude-sonnet-5-5-high`). Do not alias
+a plain Claude id (`claude-opus-5-5`) onto Antigravity: without the pairing on, ordinary Claude
+traffic for that id would rotate onto Antigravity.
+
+## Local models: one model at a time
+
+An OpenAI-compatible group with `one-model-at-a-time: true` serves one of its models at a time:
+while a request for one model is in flight, a request for a different model of the group is
+refused with 503 `local_model_busy` ("local serves one model at a time and is busy with ...").
+Requests for the same model pass. The GPU host swaps models in and out of memory, so a second
+model would evict the first mid-answer (Waseem, 5 Nov 2026). A stream holds the model until it
+ends. Two groups that each set it are gated separately. Test: `go test ./sdk/cliproxy/auth -run
+TestOneModelAtATime`.
+
+Decision 2.2 A routes the hub straight to the GPU PC over the tailnet. Before it, the `local`
+group's `base-url` was `http://automancer-vps:8100/v1`, a Caddy router on auto-vps that forwards
+to `https://omarchy.taild6c90e.ts.net` (Linux boot) then `https://wasnewpc.taild6c90e.ts.net`
+(Windows boot) of the same PC. Proposed group (not applied; the gateway key is unchanged):
+
+```diff
+   openai-compatibility:
+     - name: local
+-      base-url: http://automancer-vps:8100/v1
++      base-url: https://wasnewpc.taild6c90e.ts.net/v1
++      one-model-at-a-time: true
+       models:
+-        - name: gemma-26b
+-          alias: local/gemma-26b
+         - name: qwen3.8-27b
+           alias: local/qwen3.8-27b
+         - name: qwen3.8-flash-next
+           alias: local/qwen3.8-flash-next
+-        - name: lfm2.5-8b-a1b
+-          alias: local/lfm2.5-8b-a1b
+       keys:
+         - api-key: <unchanged>
++    - name: local-omarchy
++      base-url: https://omarchy.taild6c90e.ts.net/v1
++      one-model-at-a-time: true
++      models:
++        - name: qwen3.8-27b
++          alias: local/qwen3.8-27b
++        - name: qwen3.8-flash-next
++          alias: local/qwen3.8-flash-next
++      keys:
++        - api-key: <the same key>
+```
+
+The two groups share the aliases, so whichever boot is up serves them. The gateway refuses new
+work with 503 `gateway_desk_busy` while Waseem is using the PC, including `/v1/models`; its open
+`GET /status/models` lists the catalogue at any time.
+
 ### Rotating the OpenCode Go key
 
 `AUT_OPENCODE_GO_API_KEY` in BWS is the estate's source of truth for the key. The hub keeps its
@@ -171,7 +270,7 @@ The proxy already records the quota headers each account returned on its last re
 Among the accounts that can serve the request right now (not cooling down after a 429, not
 disabled, not held, matching any pin), it picks the first by:
 
-1. **Not spent before spent.** An account is spent when any observed window (5-hour or weekly) is
+1. **Not spent before spent.** An account is spent when any observed window (5-hour, daily or weekly) is
    at 95% or more. Spent accounts are still used as a last resort until a window reaches 100%;
    then the paid-credits guard (below) removes them.
 2. **Known reset before unknown.** The rank uses the account's longest window: weekly for Claude
@@ -236,6 +335,12 @@ routing:
   login is marked `unauthorized`, as a refused refresh on a request would mark it (t10411).
 - Claude and Codex readings are stored as the same quota headers their responses carry, so
   consume-first ranks idle accounts on them. A poll never replaces newer headers from traffic.
+  Devin readings are stored as the daily and weekly signals its executor records, so a Devin
+  window at 95% is spent and one at 100% is held out by the paid-credits guard, as for Claude and
+  Codex (t15619). A window Devin reports without a reset time is ignored.
+- The plan is read fresh on every poll. Devin reports the plan of the current billing period:
+  on 5 Nov 2026 it still said "Max" with the period ending 10 Nov 2026 18:24 UTC, after Waseem
+  downgraded to Pro, so the downgrade shows from then.
 - The last reading of every account is written to `<auth-dir>/usage-snapshot.cache` (not `.json`,
   so the watcher never loads it as a credential). It holds figures only, no tokens. After a
   restart it is read back, so the router order is known immediately. The Postgres store clears

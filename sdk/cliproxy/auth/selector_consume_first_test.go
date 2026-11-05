@@ -295,3 +295,24 @@ func TestSpentIncludedAllowanceRefusesPaidCredits(t *testing.T) {
 		t.Fatalf("Execute(pin=team) with allow_credits = %q, %v; want %q", got, errExec, team.ID)
 	}
 }
+
+// Devin's weekly window at 100% (t15619): the router counts the account spent and
+// routes nothing to it until the reset, as for Claude and Codex.
+func TestDevinExhaustedWindowIsSpent(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	weeklyReset := now.Add(48 * time.Hour).UTC().Truncate(time.Second)
+	devin := &Auth{ID: "devin-spent", Provider: "devin", Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+		"daily_quota_remaining_percent": "100%", "daily_quota_reset_at": now.Add(12 * time.Hour).UTC().Format(time.RFC3339),
+		"weekly_quota_remaining_percent": "0%", "weekly_quota_reset_at": weeklyReset.Format(time.RFC3339),
+	}}}
+	if _, used, spent := ConsumeFirstStanding(devin, now); !spent || used != 100 {
+		t.Fatalf("standing = used %v spent %v; want 100 and spent", used, spent)
+	}
+	if until, guarded := authIncludedSpentUntil(devin, now); !guarded || !until.Equal(weeklyReset) {
+		t.Fatalf("guard = %v until %v; want guarded until %v", guarded, until, weeklyReset)
+	}
+	if (authSelectionEligibility{}).allows(devin) {
+		t.Fatal("an exhausted Devin account is still eligible for routing")
+	}
+}

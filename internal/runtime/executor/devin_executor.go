@@ -206,22 +206,8 @@ func (e *DevinExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	if updated.Quota.Signals == nil {
 		updated.Quota.Signals = make(map[string]string)
 	}
-	if status.Plan != "" {
-		updated.Quota.Signals["plan"] = status.Plan
-	}
-	updated.Quota.Signals["daily_quota_remaining_percent"] = fmt.Sprintf("%d%%", status.DailyQuotaRemainingPercent)
-	updated.Quota.Signals["weekly_quota_remaining_percent"] = fmt.Sprintf("%d%%", status.WeeklyQuotaRemainingPercent)
-	if !status.DailyQuotaResetAt.IsZero() {
-		updated.Quota.Signals["daily_quota_reset_at"] = status.DailyQuotaResetAt.Format(time.RFC3339)
-	}
-	if !status.WeeklyQuotaResetAt.IsZero() {
-		updated.Quota.Signals["weekly_quota_reset_at"] = status.WeeklyQuotaResetAt.Format(time.RFC3339)
-	}
-	if !status.PlanStart.IsZero() {
-		updated.Quota.Signals["plan_start"] = status.PlanStart.Format(time.RFC3339)
-	}
-	if !status.PlanEnd.IsZero() {
-		updated.Quota.Signals["plan_end"] = status.PlanEnd.Format(time.RFC3339)
+	for key, value := range status.QuotaSignals() {
+		updated.Quota.Signals[key] = value
 	}
 	updated.Quota.ObservedAt = time.Now()
 	updated.LastRefreshedAt = time.Now()
