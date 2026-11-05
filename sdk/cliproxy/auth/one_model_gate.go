@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -55,6 +56,7 @@ func (m *Manager) acquireOneModel(providers []string, model string) (func(), err
 	if len(gated) == 0 {
 		return nil, nil
 	}
+	model = thinking.ParseSuffix(model).ModelName // an effort suffix is the same model
 	gate := &m.oneModel
 	gate.mu.Lock()
 	defer gate.mu.Unlock()
