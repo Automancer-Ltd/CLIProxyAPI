@@ -3,21 +3,20 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"sort"
+	"strings"
 	"testing"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	claudemodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/claude/models"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
-// Not parallel: the Antigravity pairing is process-wide.
-func TestModelListingFollowsAntigravityPairing(t *testing.T) {
+func TestModelCatalogsFollowAntigravityPairing(t *testing.T) {
 	const (
-		shared     = "list-pair-claude-shared"
-		claudeOnly = "list-pair-claude-only"
-		agyOnly    = "list-pair-gemini-agy"
-		unknown    = "list-pair-unregistered"
+		shared     = "claude-list-pair-shared"
+		claudeOnly = "claude-list-pair-only"
+		agyOnly    = "list-pair-gemini-agy" // the Claude catalog cloaks this id
 	)
 	reg := registry.GetGlobalRegistry()
 	reg.RegisterClient("list-pair-claude", "claude", []*registry.ModelInfo{{ID: shared}, {ID: claudeOnly}})
@@ -26,52 +25,61 @@ func TestModelListingFollowsAntigravityPairing(t *testing.T) {
 		reg.UnregisterClient("list-pair-claude")
 		reg.UnregisterClient("list-pair-agy")
 	})
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.SetConfig(&internalconfig.Config{SDKConfig: internalconfig.SDKConfig{AntigravityKeys: []string{"agy-key"}}})
-	t.Cleanup(func() { manager.SetConfig(&internalconfig.Config{}) })
-
-	openaiList := `{"object":"list","data":[{"id":"` + shared + `"},{"id":"` + claudeOnly + `"},{"id":"` + agyOnly + `"},{"id":"` + unknown + `"}]}`
-	geminiList := `{"models":[{"name":"models/` + shared + `"},{"name":"models/` + claudeOnly + `"},{"name":"models/` + agyOnly + `"}]}`
-	ids := func(body []byte) []string {
-		var catalog struct {
-			Data   []struct{ ID string }   `json:"data"`
-			Models []struct{ Name string } `json:"models"`
-		}
-		if err := json.Unmarshal(body, &catalog); err != nil {
-			t.Fatalf("filtered body is not JSON: %v", err)
-		}
-		var out []string
-		for _, m := range catalog.Data {
-			out = append(out, m.ID)
-		}
-		for _, m := range catalog.Models {
-			out = append(out, m.Name)
-		}
-		return out
+	roleCtx := func(role coreauth.ProviderAccess) context.Context {
+		return coreauth.WithProviderAccess(context.Background(), string(role))
 	}
-	for _, tc := range []struct {
-		key, body string
-		want      []string
-	}{
-		{"agy-key", openaiList, []string{shared, agyOnly}},
-		{"other-key", openaiList, []string{shared, claudeOnly, unknown}},
-		{"agy-key", geminiList, []string{"models/" + shared, "models/" + agyOnly}},
-		{"other-key", geminiList, []string{"models/" + shared, "models/" + claudeOnly}},
-	} {
-		ctx := coreusage.WithAPIKey(context.Background(), tc.key)
-		got := ids(filterModelListForKey(ctx, []byte(tc.body)))
-		if len(got) != len(tc.want) {
-			t.Fatalf("key %s listing = %v, want %v", tc.key, got, tc.want)
-		}
-		for i := range got {
-			if got[i] != tc.want[i] {
-				t.Fatalf("key %s listing = %v, want %v", tc.key, got, tc.want)
+	ours := func(models []map[string]any) []string {
+		var ids []string
+		for _, model := range models {
+			id, _ := model["id"].(string)
+			if strings.Contains(id, "list-pair") || strings.Contains(id, "riap-tsil") {
+				ids = append(ids, id)
 			}
 		}
+		sort.Strings(ids)
+		return ids
+	}
+	for _, tc := range []struct {
+		role coreauth.ProviderAccess
+		want []string
+	}{
+		{coreauth.ProviderAccessAntigravityOnly, []string{shared, agyOnly}},
+		{coreauth.ProviderAccessNoAntigravity, []string{claudeOnly, shared}},
+		{coreauth.ProviderAccessOpen, []string{claudeOnly, shared, agyOnly}},
+	} {
+		got := ours(ListedModels(roleCtx(tc.role), "openai"))
+		want := append([]string(nil), tc.want...)
+		sort.Strings(want)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s listing = %v, want %v", tc.role, got, want)
+		}
 	}
 
-	manager.SetConfig(&internalconfig.Config{})
-	if got := ids(filterModelListForKey(coreusage.WithAPIKey(context.Background(), "other-key"), []byte(openaiList))); len(got) != 4 {
-		t.Fatalf("after reload without paired keys listing = %v, want all four", got)
+	// The Claude catalog renames non-Claude ids; filtering before that transform keeps
+	// the Antigravity-only model out for ordinary keys, and pagination names only
+	// listed models.
+	catalog := claudemodels.BuildResponse(ListedModels(roleCtx(coreauth.ProviderAccessNoAntigravity), "claude"), false)
+	cloaked := claudemodels.EnsureClaudeModelIDPrefix(agyOnly)
+	ids := map[string]bool{}
+	for _, model := range catalog["data"].([]map[string]any) {
+		ids[model["id"].(string)] = true
+	}
+	if ids[cloaked] || !ids[shared] || !ids[catalog["first_id"].(string)] || !ids[catalog["last_id"].(string)] {
+		t.Fatalf("ordinary Claude catalog ids %v, first %v last %v; want %s hidden", ids, catalog["first_id"], catalog["last_id"], cloaked)
+	}
+
+	// An interceptor cannot add back an entry the key may not see; pagination is recomputed.
+	allowed := catalogIDs([]byte(`{"data":[{"id":"` + shared + `"}],"first_id":"` + shared + `","last_id":"` + shared + `"}`))
+	rewritten := keepCatalogIDs([]byte(`{"data":[{"id":"`+cloaked+`"},{"id":"`+shared+`"}],"first_id":"`+cloaked+`","last_id":"`+shared+`","has_more":false}`), allowed)
+	var out struct {
+		Data    []struct{ ID string } `json:"data"`
+		FirstID string                `json:"first_id"`
+		LastID  string                `json:"last_id"`
+	}
+	if err := json.Unmarshal(rewritten, &out); err != nil || len(out.Data) != 1 || out.Data[0].ID != shared || out.FirstID != shared || out.LastID != shared {
+		t.Fatalf("after interceptor filter = %s (%v)", rewritten, err)
+	}
+	if string(keepCatalogIDs([]byte("not json"), allowed)) != `{"data":[]}` {
+		t.Fatal("an unreadable intercepted catalog must fail closed")
 	}
 }

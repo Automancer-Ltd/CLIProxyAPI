@@ -88,9 +88,9 @@ type authSelectionEligibility struct {
 	credentialPolicy string
 	disallowFreeAuth bool
 	accountPin       string
-	// Antigravity pairing (access.antigravity-keys) of the request's client key.
-	antigravityRestricted bool
-	antigravityPaired     bool
+	// providerAccess is the request's Antigravity pairing role; selection skips the
+	// credentials it forbids, and AdmitProvider refuses them at every upstream attempt.
+	providerAccess ProviderAccess
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -114,7 +114,7 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 		disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata),
 		accountPin:       accountPinFromMetadata(opts.Metadata),
 	}
-	eligibility.antigravityRestricted, eligibility.antigravityPaired = AntigravityAccess(ctx)
+	eligibility.providerAccess = ProviderAccessFromContext(ctx)
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
@@ -138,7 +138,7 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if e.accountPin == "" && AuthPinOnly(auth) {
 		return false
 	}
-	if e.antigravityRestricted && !AntigravityAllowsProvider(e.antigravityPaired, auth.Provider) {
+	if !e.providerAccess.AllowsProvider(auth.Provider) {
 		return false
 	}
 	now := time.Now()

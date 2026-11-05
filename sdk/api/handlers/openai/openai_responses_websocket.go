@@ -336,6 +336,7 @@ func (h *OpenAIResponsesAPIHandler) authenticateResponsesWebsocketTurn(c *gin.Co
 			reqCtx := usage.WithAPIKey(c.Request.Context(), result.Principal)
 			reqCtx = usage.WithAccessProvider(reqCtx, result.Provider)
 			reqCtx = usage.WithIsNativeKey(reqCtx, usage.IsNativeAccessProvider(result.Provider))
+			reqCtx = coreauth.WithProviderAccess(reqCtx, result.Metadata[coreauth.ProviderAccessMetadataKey])
 			c.Request = c.Request.WithContext(reqCtx)
 		}
 	}

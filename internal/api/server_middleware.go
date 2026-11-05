@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"errors"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"io"
 	"net"
 	"net/http"
@@ -521,6 +522,7 @@ func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.Ha
 				reqCtx := coreusage.WithAPIKey(c.Request.Context(), result.Principal)
 				reqCtx = coreusage.WithAccessProvider(reqCtx, result.Provider)
 				reqCtx = coreusage.WithIsNativeKey(reqCtx, coreusage.IsNativeAccessProvider(result.Provider))
+				reqCtx = coreauth.WithProviderAccess(reqCtx, result.Metadata[coreauth.ProviderAccessMetadataKey])
 				c.Request = c.Request.WithContext(reqCtx)
 			}
 			middleware.CaptureAuthenticatedRequestBody(c)

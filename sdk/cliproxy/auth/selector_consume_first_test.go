@@ -316,3 +316,35 @@ func TestDevinExhaustedWindowIsSpent(t *testing.T) {
 		t.Fatal("an exhausted Devin account is still eligible for routing")
 	}
 }
+
+// A poll that finds Devin's weekly window exhausted must reach the scheduler's own
+// snapshot, not only the Manager's map, or the account keeps serving (t15619).
+func TestObservedDevinExhaustionStopsRouting(t *testing.T) {
+	const model = "devin-observe-test-model"
+	// fill-first runs on the incremental scheduler, which picks from its own snapshot.
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	m.RegisterExecutor(&authFallbackExecutor{id: "devin"})
+	devin := &Auth{ID: "devin-observe", Provider: "devin"}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(devin.ID, "devin", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { reg.UnregisterClient(devin.ID) })
+	if _, err := m.Register(context.Background(), devin); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	execute := func() error {
+		_, err := m.Execute(context.Background(), []string{"devin"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+		return err
+	}
+	if err := execute(); err != nil {
+		t.Fatalf("before the poll: %v", err)
+	}
+	now := time.Now()
+	if !m.ObserveQuotaSignals(devin.ID, map[string]string{
+		"weekly_quota_remaining_percent": "0%", "weekly_quota_reset_at": now.Add(48 * time.Hour).UTC().Format(time.RFC3339),
+	}, now) {
+		t.Fatal("observation not applied")
+	}
+	if err := execute(); err == nil {
+		t.Fatal("an exhausted Devin account still serves after the poll")
+	}
+}

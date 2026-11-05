@@ -42,21 +42,25 @@ type DevinUserStatus struct {
 }
 
 // QuotaSignals returns the status as the quota signals a Devin credential carries:
-// plan, daily and weekly remaining percent with their resets, and the plan period.
+// plan, the plan period, and each daily or weekly window as remaining percent with its
+// reset. A window is reported only with its reset: protobuf omits a zero remaining, so
+// a remaining without a reset in the same status was not reported at all.
 func (s *DevinUserStatus) QuotaSignals() map[string]string {
-	signals := map[string]string{
-		"daily_quota_remaining_percent":  fmt.Sprintf("%d%%", s.DailyQuotaRemainingPercent),
-		"weekly_quota_remaining_percent": fmt.Sprintf("%d%%", s.WeeklyQuotaRemainingPercent),
-	}
+	signals := make(map[string]string)
 	if s.Plan != "" {
 		signals["plan"] = s.Plan
 	}
-	for key, at := range map[string]time.Time{
-		"daily_quota_reset_at":  s.DailyQuotaResetAt,
-		"weekly_quota_reset_at": s.WeeklyQuotaResetAt,
-		"plan_start":            s.PlanStart,
-		"plan_end":              s.PlanEnd,
-	} {
+	for _, window := range []struct {
+		key       string
+		remaining int64
+		reset     time.Time
+	}{{"daily", s.DailyQuotaRemainingPercent, s.DailyQuotaResetAt}, {"weekly", s.WeeklyQuotaRemainingPercent, s.WeeklyQuotaResetAt}} {
+		if !window.reset.IsZero() {
+			signals[window.key+"_quota_remaining_percent"] = fmt.Sprintf("%d%%", window.remaining)
+			signals[window.key+"_quota_reset_at"] = window.reset.Format(time.RFC3339)
+		}
+	}
+	for key, at := range map[string]time.Time{"plan_start": s.PlanStart, "plan_end": s.PlanEnd} {
 		if !at.IsZero() {
 			signals[key] = at.Format(time.RFC3339)
 		}

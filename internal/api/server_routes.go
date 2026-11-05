@@ -695,7 +695,7 @@ func (s *Server) handleGrokModels(c *gin.Context) {
 		}
 		models = grokModelsFromHomeEntries(entries)
 	} else {
-		models = grokModelsFromRegistryInfos(registry.GetGlobalRegistry().GetAvailableModelInfos())
+		models = grokModelsFromRegistryInfos(handlers.ListedModelInfos(handlers.RequestContext(c)))
 	}
 	s.writeModelListResponse(c, "openai", grokbuild.BuildResponse(models))
 }
@@ -1066,7 +1066,16 @@ func (s *Server) loadHomeModelEntries(c *gin.Context) ([]homeModelEntry, bool) {
 		return nil, false
 	}
 
-	return entries, true
+	// Home lists each model's providers; under the Antigravity pairing keep only what the
+	// client key may use (an entry without providers fails closed).
+	keep := handlers.ProviderKeep(handlers.RequestContext(c))
+	visible := entries[:0]
+	for _, entry := range entries {
+		if keep(entry.providers) {
+			visible = append(visible, entry)
+		}
+	}
+	return visible, true
 }
 
 func formatHomeGeminiModels(entries []homeModelEntry) []map[string]any {

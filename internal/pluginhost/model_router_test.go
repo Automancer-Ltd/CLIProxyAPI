@@ -616,3 +616,38 @@ func TestHostRouteModelSkipsOAuthOnlyExecutorTargets(t *testing.T) {
 		t.Fatalf("RouteModel() = %#v, %v; want fallback executor handled", resp, ok)
 	}
 }
+
+// A direct plugin executor route is an upstream attempt like any other: a key paired with
+// Antigravity cannot use a plugin provider (execute, stream and count), and an ordinary key
+// still can (t15617).
+func TestHostPluginExecutorRoutesFollowAntigravityPairing(t *testing.T) {
+	calls := 0
+	executor := &fakeExecutor{
+		identifier: "cloud-plugin",
+		execute: func(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
+			calls++
+			return pluginapi.ExecutorResponse{Payload: []byte("plugin-ok")}, nil
+		},
+	}
+	host := newRouteModelHostWithRecords(capabilityRecord{
+		id: "executor",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			Executor: executor, ExecutorInputFormats: []string{"openai"}, ExecutorOutputFormats: []string{"openai"},
+		}},
+	})
+	req := coreexecutor.Request{Model: "m", Payload: []byte(`{"model":"m"}`)}
+	paired := coreauth.WithProviderAccess(context.Background(), string(coreauth.ProviderAccessAntigravityOnly))
+	if _, err := host.ExecutePluginExecutor(paired, "executor", req, coreexecutor.Options{}); err == nil {
+		t.Fatal("paired key reached a plugin executor")
+	}
+	if _, err := host.ExecutePluginExecutorStream(paired, "executor", req, coreexecutor.Options{}); err == nil {
+		t.Fatal("paired key reached a plugin executor stream")
+	}
+	if _, err := host.CountPluginExecutor(paired, "executor", req, coreexecutor.Options{}); err == nil {
+		t.Fatal("paired key reached a plugin executor count")
+	}
+	ordinary := coreauth.WithProviderAccess(context.Background(), string(coreauth.ProviderAccessNoAntigravity))
+	if _, err := host.ExecutePluginExecutor(ordinary, "executor", req, coreexecutor.Options{}); err != nil || calls != 1 {
+		t.Fatalf("ordinary key: err %v calls %d; want served once", err, calls)
+	}
+}

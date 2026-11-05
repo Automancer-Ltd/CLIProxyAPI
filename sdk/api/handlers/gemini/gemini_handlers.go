@@ -49,7 +49,7 @@ func (h *GeminiAPIHandler) Models() []map[string]any {
 // GeminiModels handles the Gemini models listing endpoint.
 // It returns a JSON response containing available Gemini models and their specifications.
 func (h *GeminiAPIHandler) GeminiModels(c *gin.Context) {
-	rawModels := h.Models()
+	rawModels := handlers.ListedModels(handlers.RequestContext(c), "gemini")
 	normalizedModels := make([]map[string]any, 0, len(rawModels))
 	defaultMethods := []string{"generateContent"}
 	for _, model := range rawModels {
@@ -96,7 +96,7 @@ func (h *GeminiAPIHandler) GeminiGetHandler(c *gin.Context) {
 	action := strings.TrimPrefix(request.Action, "/")
 
 	// Get dynamic models from the global registry and find the matching one
-	availableModels := h.Models()
+	availableModels := handlers.ListedModels(handlers.RequestContext(c), "gemini")
 	var targetModel map[string]any
 
 	for _, model := range availableModels {
@@ -108,7 +108,7 @@ func (h *GeminiAPIHandler) GeminiGetHandler(c *gin.Context) {
 		}
 	}
 
-	if targetModel != nil && handlers.ModelVisibleToKey(c.Request.Context(), action) {
+	if targetModel != nil {
 		// Ensure the name has 'models/' prefix in the output if it's a Gemini model
 		if name, ok := targetModel["name"].(string); ok && name != "" && !strings.HasPrefix(name, "models/") {
 			targetModel["name"] = "models/" + name

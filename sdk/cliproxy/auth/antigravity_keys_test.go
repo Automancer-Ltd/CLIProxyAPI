@@ -9,20 +9,25 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
-// Not parallel: the pairing is process-wide, and parallel tests start only after
-// the sequential ones have finished and restored it.
-func TestAntigravityPairingRoutesPairedKeyOnlyToAntigravity(t *testing.T) {
+func statusOf(err error) int {
+	var withStatus interface{ StatusCode() int }
+	if errors.As(err, &withStatus) {
+		return withStatus.StatusCode()
+	}
+	return 0
+}
+
+func TestAntigravityPairingFollowsTheRoleCarriedByTheRequest(t *testing.T) {
 	const (
 		shared     = "pair-test-claude-shared" // served by Claude and, through an alias, Antigravity
 		claudeOnly = "pair-test-claude-only"
 		agyOnly    = "pair-test-gemini-agy"
-		agyKey     = "agy-client-key"
 	)
 	m := NewManager(nil, &ConsumeFirstSelector{}, nil)
-	m.RegisterExecutor(&authFallbackExecutor{id: "claude"})
+	claudeExec := &authFallbackExecutor{id: "claude"}
+	m.RegisterExecutor(claudeExec)
 	m.RegisterExecutor(&authFallbackExecutor{id: "antigravity"})
 	claude := &Auth{ID: "pair-claude", Provider: "claude"}
 	agy := &Auth{ID: "pair-agy", Provider: "antigravity"}
@@ -35,10 +40,13 @@ func TestAntigravityPairingRoutesPairedKeyOnlyToAntigravity(t *testing.T) {
 			t.Fatalf("register %s: %v", auth.ID, errRegister)
 		}
 	}
-	m.SetConfig(&internalconfig.Config{SDKConfig: internalconfig.SDKConfig{AntigravityKeys: []string{agyKey}}})
-	t.Cleanup(func() { setAntigravityKeys(nil) })
+	// The Manager's own snapshot pairs nobody: the role the request carries from its
+	// authentication must decide (a rotated config cannot widen a request's access).
+	m.SetConfig(&internalconfig.Config{})
 
-	keyCtx := func(key string) context.Context { return coreusage.WithAPIKey(context.Background(), key) }
+	roleCtx := func(role ProviderAccess) context.Context {
+		return WithProviderAccess(context.Background(), string(role))
+	}
 	providers := func(model string) []string {
 		switch model {
 		case shared:
@@ -48,12 +56,12 @@ func TestAntigravityPairingRoutesPairedKeyOnlyToAntigravity(t *testing.T) {
 		}
 		return []string{"antigravity"}
 	}
-	execute := func(key, model string) (string, error) {
-		resp, errExec := m.Execute(keyCtx(key), providers(model), cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	execute := func(ctx context.Context, model string) (string, error) {
+		resp, errExec := m.Execute(ctx, providers(model), cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
 		return string(resp.Payload), errExec
 	}
-	stream := func(key, model string) (string, error) {
-		result, errStream := m.ExecuteStream(keyCtx(key), providers(model), cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	stream := func(ctx context.Context, model string) (string, error) {
+		result, errStream := m.ExecuteStream(ctx, providers(model), cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
 		if errStream != nil {
 			return "", errStream
 		}
@@ -63,95 +71,154 @@ func TestAntigravityPairingRoutesPairedKeyOnlyToAntigravity(t *testing.T) {
 		}
 		return got, nil
 	}
-	refused := func(err error) bool {
-		var authErr *Error
-		return errors.As(err, &authErr) && authErr.StatusCode() == http.StatusForbidden && authErr.Code == "model_not_allowed"
-	}
-
 	for _, call := range []struct {
 		name string
-		run  func(key, model string) (string, error)
+		run  func(context.Context, string) (string, error)
 	}{{"Execute", execute}, {"ExecuteStream", stream}} {
-		if got, err := call.run(agyKey, shared); err != nil || got != agy.ID {
-			t.Fatalf("%s(paired key, %s) = %q, %v; want Antigravity, never the Claude account", call.name, shared, got, err)
+		if got, err := call.run(roleCtx(ProviderAccessAntigravityOnly), shared); err != nil || got != agy.ID {
+			t.Fatalf("%s(paired, %s) = %q, %v; want Antigravity, never the Claude account", call.name, shared, got, err)
 		}
-		if got, err := call.run(agyKey, claudeOnly); !refused(err) {
-			t.Fatalf("%s(paired key, %s) = %q, %v; want a 403 refusal", call.name, claudeOnly, got, err)
+		if got, err := call.run(roleCtx(ProviderAccessAntigravityOnly), claudeOnly); statusOf(err) != http.StatusForbidden {
+			t.Fatalf("%s(paired, %s) = %q, %v; want 403", call.name, claudeOnly, got, err)
 		}
-		if got, err := call.run("other-key", shared); err != nil || got != claude.ID {
-			t.Fatalf("%s(other key, %s) = %q, %v; want the Claude account", call.name, shared, got, err)
+		if got, err := call.run(roleCtx(ProviderAccessNoAntigravity), shared); err != nil || got != claude.ID {
+			t.Fatalf("%s(ordinary, %s) = %q, %v; want the Claude account", call.name, shared, got, err)
 		}
-		for _, key := range []string{"other-key", ""} {
-			if got, err := call.run(key, agyOnly); !refused(err) {
-				t.Fatalf("%s(key %q, %s) = %q, %v; want a 403 refusal", call.name, key, agyOnly, got, err)
-			}
+		if got, err := call.run(roleCtx(ProviderAccessNoAntigravity), agyOnly); statusOf(err) != http.StatusForbidden {
+			t.Fatalf("%s(ordinary, %s) = %q, %v; want 403", call.name, agyOnly, got, err)
 		}
 	}
 
-	// Direct selection paths (Codex live, alpha search) are gated the same way.
-	if _, err := m.SelectAuth(keyCtx(agyKey), "claude", shared, cliproxyexecutor.Options{}); err == nil {
-		t.Fatal("SelectAuth(paired key, claude) succeeded; want no Claude credential")
+	// The attempt boundary refuses on its own, whatever path selected the credential
+	// (Home dispatch, retained sessions, retries), without cooling the credential down.
+	_, err := m.executeAuthorized(roleCtx(ProviderAccessAntigravityOnly), claudeExec, claude, cliproxyexecutor.Request{Model: shared}, cliproxyexecutor.Options{})
+	if statusOf(err) != http.StatusForbidden || !isRequestScopedError(err) {
+		t.Fatalf("executeAuthorized(paired, claude) = %v; want a request-scoped 403", err)
 	}
-	if _, err := m.SelectAuth(keyCtx("other-key"), "antigravity", agyOnly, cliproxyexecutor.Options{}); err == nil {
-		t.Fatal("SelectAuth(other key, antigravity) succeeded; want no Antigravity credential")
+	if _, err := m.streamAuthorized(roleCtx(ProviderAccessAntigravityOnly), claudeExec, claude, cliproxyexecutor.Request{Model: shared}, cliproxyexecutor.Options{}); statusOf(err) != http.StatusForbidden {
+		t.Fatalf("streamAuthorized(paired, claude) = %v; want 403", err)
+	}
+	if _, err := m.SelectAuth(roleCtx(ProviderAccessAntigravityOnly), "claude", shared, cliproxyexecutor.Options{}); err == nil {
+		t.Fatal("SelectAuth(paired, claude) succeeded; want no Claude credential")
 	}
 
-	// A reload without paired keys opens Antigravity to every key again.
-	m.SetConfig(&internalconfig.Config{})
-	if got, err := execute("other-key", agyOnly); err != nil || got != agy.ID {
-		t.Fatalf("after reload Execute(other key, %s) = %q, %v; want Antigravity", agyOnly, got, err)
+	// A request with no role (internal caller, management, VerifyInference) fails closed
+	// for Antigravity while the Manager's config pairs a key, and is open otherwise.
+	if got, err := execute(context.Background(), agyOnly); err != nil || got != agy.ID {
+		t.Fatalf("no role, no pairing: %q, %v; want Antigravity", got, err)
+	}
+	m.SetConfig(&internalconfig.Config{SDKConfig: internalconfig.SDKConfig{AntigravityKeys: []string{"agy-key"}}})
+	if got, err := execute(context.Background(), agyOnly); statusOf(err) != http.StatusForbidden {
+		t.Fatalf("no role under pairing: %q, %v; want 403", got, err)
+	}
+	if got, err := execute(context.Background(), shared); err != nil || got != claude.ID {
+		t.Fatalf("no role under pairing, shared model: %q, %v; want Claude", got, err)
 	}
 }
 
-func TestOneModelAtATimeRefusesSecondModelUntilFirstFinishes(t *testing.T) {
-	t.Parallel()
-	m := NewManager(nil, nil, nil)
+// blockingExecutor answers each request after release is closed, so a test can hold
+// an attempt in flight.
+type blockingExecutor struct {
+	authFallbackExecutor
+	started chan string
+	release chan struct{}
+	panics  bool
+}
+
+func (e *blockingExecutor) Execute(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	e.started <- req.Model
+	<-e.release
+	return cliproxyexecutor.Response{Payload: []byte(req.Model)}, nil
+}
+
+func (e *blockingExecutor) ExecuteStream(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	if e.panics {
+		panic("stream setup failed")
+	}
+	chunks := make(chan cliproxyexecutor.StreamChunk)
+	go func() {
+		defer close(chunks)
+		<-e.release
+		chunks <- cliproxyexecutor.StreamChunk{Payload: []byte(req.Model)}
+	}()
+	return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func TestOneModelAtATimeGatesTheSelectedGroupPerUpstreamModel(t *testing.T) {
+	const group = "openai-compatible-gate-local"
+	m := NewManager(nil, &ConsumeFirstSelector{}, nil)
 	m.SetConfig(&internalconfig.Config{OpenAICompatibility: []internalconfig.OpenAICompatibility{
-		{Name: "local", OneModelAtATime: true},
-		{Name: "cloud"},
+		{Name: "gate-local", OneModelAtATime: true},
 	}})
-	local := []string{"openai-compatible-local"}
+	exec := &blockingExecutor{authFallbackExecutor: authFallbackExecutor{id: group}, started: make(chan string, 4), release: make(chan struct{})}
+	m.RegisterExecutor(exec)
+	local := &Auth{ID: "gate-local-key", Provider: group, Attributes: map[string]string{"provider_key": group}}
+	reg := registry.GetGlobalRegistry()
+	// Two aliases for one upstream model, and a second upstream model.
+	reg.RegisterClient(local.ID, group, []*registry.ModelInfo{{ID: "gate/a"}, {ID: "gate/a-alias"}, {ID: "gate/b"}})
+	t.Cleanup(func() { reg.UnregisterClient(local.ID) })
+	if _, errRegister := m.Register(context.Background(), local); errRegister != nil {
+		t.Fatalf("register: %v", errRegister)
+	}
+	execute := func(model string) (string, error) {
+		resp, err := m.Execute(context.Background(), []string{group}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+		return string(resp.Payload), err
+	}
 
-	releaseA, err := m.acquireOneModel(local, "local/a")
-	if err != nil || releaseA == nil {
-		t.Fatalf("first request: release=%v err=%v", releaseA != nil, err)
+	done := make(chan error, 2)
+	go func() { _, err := execute("gate/a"); done <- err }()
+	<-exec.started
+	go func() { _, err := execute("gate/a"); done <- err }()
+	<-exec.started // the same model is admitted while the first is in flight
+	if got, err := execute("gate/b"); statusOf(err) != http.StatusServiceUnavailable {
+		t.Fatalf("other model while busy = %q, %v; want 503", got, err)
 	}
-	releaseA2, err := m.acquireOneModel(local, "local/a")
-	if err != nil {
-		t.Fatalf("same model while busy: %v; want admitted", err)
+	close(exec.release)
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatalf("in-flight request: %v", err)
+		}
 	}
-	var authErr *Error
-	if _, err := m.acquireOneModel(local, "local/b"); !errors.As(err, &authErr) || authErr.StatusCode() != http.StatusServiceUnavailable {
-		t.Fatalf("other model while busy: %v; want 503", err)
+	// The refusal did not cool the credential down.
+	if got, err := execute("gate/b"); err != nil || got != "gate/b" {
+		t.Fatalf("other model after the first finished = %q, %v; want served", got, err)
 	}
-	if release, err := m.acquireOneModel([]string{"openai-compatible-cloud"}, "cloud/x"); err != nil || release != nil {
-		t.Fatalf("ungated group: release=%v err=%v; want no gate", release != nil, err)
-	}
-	releaseA()
-	releaseA() // a second call is a no-op
-	if _, err := m.acquireOneModel(local, "local/b"); err == nil {
-		t.Fatal("other model with one request for a still in flight: want 503")
-	}
-	releaseA2()
 
-	// A stream holds the model until its chunks are drained.
-	releaseB, err := m.acquireOneModel(local, "local/b")
+	// A stream holds the gate until it is drained.
+	exec.release = make(chan struct{})
+	result, err := m.streamAuthorized(context.Background(), exec, local, cliproxyexecutor.Request{Model: "gate/a"}, cliproxyexecutor.Options{})
 	if err != nil {
-		t.Fatalf("other model after release: %v", err)
+		t.Fatalf("stream: %v", err)
 	}
-	source := make(chan cliproxyexecutor.StreamChunk, 1)
-	source <- cliproxyexecutor.StreamChunk{Payload: []byte("x")}
-	wrapped := releaseWhenDrained(context.Background(), &cliproxyexecutor.StreamResult{Chunks: source}, releaseB)
-	<-wrapped.Chunks
-	if _, err := m.acquireOneModel(local, "local/a"); err == nil {
+	if _, err := m.acquireOneModel(local, "gate/b"); err == nil {
 		t.Fatal("other model while a stream is open: want 503")
 	}
-	close(source)
-	for range wrapped.Chunks {
+	close(exec.release)
+	for range result.Chunks {
 	}
-	release, err := m.acquireOneModel(local, "local/a")
+	release, err := m.acquireOneModel(local, "gate/b")
 	if err != nil {
 		t.Fatalf("other model after the stream ended: %v", err)
 	}
 	release()
+
+	// A panic in stream setup releases the gate.
+	exec.panics = true
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = m.streamAuthorized(context.Background(), exec, local, cliproxyexecutor.Request{Model: "gate/a"}, cliproxyexecutor.Options{})
+	}()
+	release, err = m.acquireOneModel(local, "gate/b")
+	if err != nil {
+		t.Fatalf("gate still held after a panic in stream setup: %v", err)
+	}
+	release()
+
+	// Another group is gated separately, and an ungated group not at all.
+	other := &Auth{ID: "gate-other", Provider: "openai-compatible-gate-other"}
+	hold, _ := m.acquireOneModel(local, "gate/a")
+	if release, err := m.acquireOneModel(other, "gate/b"); err != nil || release != nil {
+		t.Fatalf("ungated group: release=%v err=%v; want no gate", release != nil, err)
+	}
+	hold()
 }

@@ -121,17 +121,6 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	release, errBusy := m.acquireOneModel(providers, authSelectionModelFromOptions(opts, req.Model))
-	if errBusy != nil {
-		return cliproxyexecutor.Response{}, errBusy
-	}
-	if release != nil {
-		defer release()
-	}
-	return m.execute(ctx, providers, req, opts)
-}
-
-func (m *Manager) execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
@@ -144,7 +133,7 @@ func (m *Manager) execute(ctx context.Context, providers []string, req cliproxye
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, false)
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
-	normalized, errPairing := antigravityPairingProviders(ctx, normalized, authSelectionModelFromOptions(opts, req.Model))
+	normalized, errPairing := m.antigravityPairingProviders(ctx, normalized, authSelectionModelFromOptions(opts, req.Model))
 	if errPairing != nil {
 		return cliproxyexecutor.Response{}, errPairing
 	}
@@ -213,7 +202,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, true)
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
-	normalized, errPairing := antigravityPairingProviders(ctx, normalized, authSelectionModelFromOptions(opts, req.Model))
+	normalized, errPairing := m.antigravityPairingProviders(ctx, normalized, authSelectionModelFromOptions(opts, req.Model))
 	if errPairing != nil {
 		return cliproxyexecutor.Response{}, errPairing
 	}
@@ -263,22 +252,6 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	release, errBusy := m.acquireOneModel(providers, authSelectionModelFromOptions(opts, req.Model))
-	if errBusy != nil {
-		return nil, errBusy
-	}
-	if release == nil {
-		return m.executeStream(ctx, providers, req, opts)
-	}
-	result, errStream := m.executeStream(ctx, providers, req, opts)
-	if errStream != nil || result == nil {
-		release()
-		return result, errStream
-	}
-	return releaseWhenDrained(ctx, result, release), nil
-}
-
-func (m *Manager) executeStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
@@ -294,7 +267,7 @@ func (m *Manager) executeStream(ctx context.Context, providers []string, req cli
 	}
 	if !m.HomeEnabled() {
 		var errPairing error
-		normalized, errPairing = antigravityPairingProviders(ctx, normalized, authSelectionModelFromOptions(opts, req.Model))
+		normalized, errPairing = m.antigravityPairingProviders(ctx, normalized, authSelectionModelFromOptions(opts, req.Model))
 		if errPairing != nil {
 			return nil, errPairing
 		}
@@ -2147,6 +2120,9 @@ func (m *Manager) PrepareHttpRequest(ctx context.Context, auth *Auth, req *http.
 	if err := m.AuthorizeHub(req.Context(), auth); err != nil {
 		return err
 	}
+	if err := m.AdmitProvider(req.Context(), auth.Provider); err != nil {
+		return err
+	}
 	return preparer.PrepareRequest(req, auth)
 }
 
@@ -2196,6 +2172,9 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
 	}
 	if err := m.AuthorizeHub(ctx, auth); err != nil {
+		return nil, err
+	}
+	if err := m.AdmitProvider(ctx, auth.Provider); err != nil {
 		return nil, err
 	}
 	return exec.HttpRequest(ctx, auth, req)

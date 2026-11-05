@@ -202,13 +202,9 @@ func (e *DevinExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 		updated.Attributes["org_name"] = status.OrgName
 	}
 
-	// Quota observation signals for management UI and conductor
-	if updated.Quota.Signals == nil {
-		updated.Quota.Signals = make(map[string]string)
-	}
-	for key, value := range status.QuotaSignals() {
-		updated.Quota.Signals[key] = value
-	}
+	// Quota observation signals for management UI and conductor. The observation is
+	// replaced whole: a window this status omits must not keep an older reset.
+	updated.Quota.Signals = status.QuotaSignals()
 	updated.Quota.ObservedAt = time.Now()
 	updated.LastRefreshedAt = time.Now()
 

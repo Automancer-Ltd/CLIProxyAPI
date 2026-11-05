@@ -28,20 +28,16 @@ func QuotaUsageWindows(quota QuotaState) []UsageWindow {
 }
 
 // ObserveQuotaSignals records quota signals a usage poll read in the credential's own
-// signal format (Devin's), replacing an older snapshot, so the router ranks and guards
-// the account on them as it does on Claude and Codex headers.
+// signal format (Devin's), replacing the older snapshot whole, so the router ranks and
+// guards the account on them as it does on Claude and Codex headers.
 func (m *Manager) ObserveQuotaSignals(id string, signals map[string]string, observedAt time.Time) bool {
-	if m == nil || observedAt.IsZero() || len(signals) == 0 {
+	if len(signals) == 0 {
 		return false
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	auth, ok := m.auths[id]
-	if !ok || auth == nil || !observedAt.After(auth.Quota.ObservedAt) {
-		return false
-	}
-	auth.Quota.Signals, auth.Quota.ObservedAt = signals, observedAt
-	return true
+	return m.observeQuota(id, observedAt, func(auth *Auth) bool {
+		auth.Quota.Signals, auth.Quota.ObservedAt = signals, observedAt
+		return true
+	})
 }
 
 // ObserveQuota records quota headers obtained out of band (a provider usage
@@ -49,14 +45,27 @@ func (m *Manager) ObserveQuotaSignals(id string, signals map[string]string, obse
 // returned them on a response. A snapshot older than the current one is
 // ignored, so a poll never overwrites fresher headers from live traffic.
 func (m *Manager) ObserveQuota(id string, headers http.Header, observedAt time.Time) bool {
+	return m.observeQuota(id, observedAt, func(auth *Auth) bool {
+		return auth.Quota.ObserveResponseHeadersForProvider(auth.Provider, headers, observedAt)
+	})
+}
+
+// observeQuota applies a newer quota observation and publishes the credential to the
+// scheduler, whose cloned snapshot decides eligibility (spent, paid-credits guard).
+func (m *Manager) observeQuota(id string, observedAt time.Time, apply func(*Auth) bool) bool {
 	if m == nil || observedAt.IsZero() {
 		return false
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	auth, ok := m.auths[id]
-	if !ok || auth == nil || !observedAt.After(auth.Quota.ObservedAt) {
+	if !ok || auth == nil || !observedAt.After(auth.Quota.ObservedAt) || !apply(auth) {
+		m.mu.Unlock()
 		return false
 	}
-	return auth.Quota.ObserveResponseHeadersForProvider(auth.Provider, headers, observedAt)
+	snapshot := auth.Clone()
+	m.mu.Unlock()
+	if m.scheduler != nil {
+		m.scheduler.upsertAuth(snapshot)
+	}
+	return true
 }
