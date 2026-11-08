@@ -58,7 +58,8 @@ header button { padding: 4px 12px; font-size: .85rem; }
 .fig { grid-area: fig; justify-self: end; font-size: 1.125rem; font-weight: 650; line-height: 1.1; color: var(--strong); }
 .when { grid-area: when; justify-self: end; align-self: start; font-size: .8rem; color: var(--ink); white-space: nowrap; }
 .when .lbl { display: none; color: var(--muted); }
-.stale > summary > :is(.bars, .fig) { opacity: .45; }
+/* Dim the bar meters only; the figures and captions keep full contrast (t15218). */
+.stale > summary :is(.gauge, .thin) { opacity: .45; }
 .out-early { color: var(--warn-ink); white-space: nowrap; }
 button.danger { border-color: var(--bad-ink); color: var(--bad-ink); }
 .actions label { flex: 1 1 140px; display: grid; gap: 2px; font-size: .75rem; color: var(--muted); }
@@ -86,7 +87,7 @@ details.acct > summary::-webkit-details-marker { display: none; }
 details.acct > summary:active { background: var(--hover); }
 details.acct:target > summary { background: var(--hover); }
 details.acct[open] > summary { border-bottom-color: transparent; }
-details.acct.out > summary > :is(.logo, .bars, .fig) { opacity: .45; }
+details.acct.out > summary > .logo:not(.initial), details.acct.out > summary :is(.gauge, .thin) { opacity: .45; }
 details.acct.out .name { color: var(--muted); }
 
 .body { padding: 0 6px 14px 42px; border-bottom: 1px solid var(--rule); }
