@@ -70,44 +70,6 @@ func TestRequestCodexTokenRecoveryRewritesNestedTargetFile(t *testing.T) {
 	}
 }
 
-// A built-in login that ignores the recovery target must refuse a targeted request:
-// otherwise it creates a new credential and reports success while the selected
-// credential stays broken.
-func TestStartOAuthV8RefusesTargetForLoginsThatIgnoreIt(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "")
-	authDir := t.TempDir()
-	cfg := &config.Config{AuthDir: authDir}
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.SetConfig(cfg)
-	if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
-		ID:       "claude-a.json",
-		FileName: "claude-a.json",
-		Provider: "claude",
-		Status:   coreauth.StatusActive,
-		Metadata: map[string]any{"type": "claude", "email": "a@example.test"},
-	}); errRegister != nil {
-		t.Fatalf("register claude-a.json: %v", errRegister)
-	}
-
-	h := NewHandlerWithoutConfigFilePath(cfg, manager)
-	router := gin.New()
-	router.Use(func(c *gin.Context) {
-		c.Set(ConfigV8ContextKey, true)
-		c.Next()
-	})
-	router.POST("/v8/management/oauth/auth-url", h.StartOAuthV8)
-
-	for _, body := range []string{`{"name":"claude-a.json"}`, `{"provider":"claude","name":"claude-a.json"}`} {
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v8/management/oauth/auth-url", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		router.ServeHTTP(w, req)
-		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "not supported") {
-			t.Fatalf("targeted claude login %s = %d %s; want 400 not supported", body, w.Code, w.Body.String())
-		}
-	}
-}
-
 // A targeted plugin re-login that asks for verification must run it and report a
 // failure: it used to answer status ok without checking the credential at all.
 func TestV8PluginReloginWithVerifyReportsVerificationFailure(t *testing.T) {

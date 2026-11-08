@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	antigravityauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
 	devinauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/devin"
 	kimiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
@@ -22,7 +23,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 const (

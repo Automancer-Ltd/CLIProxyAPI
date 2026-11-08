@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 )
 
 // restrictedAccess returns the request's Antigravity pairing role when it limits providers.

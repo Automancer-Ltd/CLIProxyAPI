@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	devinauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/devin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 )
 
 // A polled Claude account must rank on its weekly reset, and keep that rank after

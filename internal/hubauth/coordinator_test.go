@@ -2,11 +2,9 @@ package hubauth
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/base64"
 	"github.com/google/uuid"
+	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 )
 
 // This fixture implements the published HTTP contract, not the production

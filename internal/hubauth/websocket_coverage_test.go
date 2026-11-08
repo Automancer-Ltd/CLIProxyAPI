@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -17,7 +18,6 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	core "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 // A control-plane outage must not turn every response delta or ping into a

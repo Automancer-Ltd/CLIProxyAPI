@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -346,6 +345,9 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	if mode == updateModeRefresh {
 		merged := MergeRefreshedAuth(base, existing, auth)
 		if merged != nil {
+			if merged.Disabled || merged.Status == StatusDisabled {
+				merged.RefreshFailures = auth.RefreshFailures
+			}
 			if auth.HubAuthority != nil {
 				merged.HubAuthority = auth.HubAuthority
 				merged.HubAccountID = auth.HubAccountID
@@ -491,7 +493,10 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 						if existing.LastError != nil {
 							auth.LastError = cloneError(existing.LastError)
 						} else if auth.RefreshError != nil {
-							auth.LastError = &Error{Code: "unauthorized", Message: auth.RefreshError.Message, HTTPStatus: http.StatusUnauthorized}
+							auth.LastError = refreshAccessError(auth, auth.RefreshError.Message, false, hasUnauthorizedAuthFailure(existing))
+							if auth.LastError.Code == "refresh_outcome_unknown" {
+								auth.StatusMessage = auth.LastError.Message
+							}
 						}
 					}
 				}
@@ -522,15 +527,18 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	} else {
 		applyPreservedRejectedTokens(existing, auth, mode == updateModeRefresh)
 		applyPreservedRenewalState(existing, auth, mode, now)
-		if !credChanged {
-			auth.LastRefreshedAt = existing.LastRefreshedAt
-			auth.NextRefreshAfter = existing.NextRefreshAfter
-			auth.RefreshFailures = existing.RefreshFailures
-		} else if authHasUnchangedRejectedRefreshToken(auth) {
-			if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && exp.After(now) {
-				auth.NextRefreshAfter = exp
-			} else {
-				auth.NextRefreshAfter = time.Time{}
+		// Refresh updates must retain their outcome rather than the pending job marker.
+		if mode != updateModeRefresh {
+			if !credChanged {
+				auth.LastRefreshedAt = existing.LastRefreshedAt
+				auth.NextRefreshAfter = existing.NextRefreshAfter
+				auth.RefreshFailures = existing.RefreshFailures
+			} else if authHasUnchangedRejectedRefreshToken(auth) {
+				if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && exp.After(now) {
+					auth.NextRefreshAfter = exp
+				} else {
+					auth.NextRefreshAfter = time.Time{}
+				}
 			}
 		}
 	}
