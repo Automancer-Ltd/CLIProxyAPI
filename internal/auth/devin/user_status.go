@@ -41,6 +41,33 @@ type DevinUserStatus struct {
 	PlanEnd                     time.Time `json:"plan_end,omitempty"`
 }
 
+// QuotaSignals returns the status as the quota signals a Devin credential carries:
+// plan, the plan period, and each daily or weekly window as remaining percent with its
+// reset. A window is reported only with its reset: protobuf omits a zero remaining, so
+// a remaining without a reset in the same status was not reported at all.
+func (s *DevinUserStatus) QuotaSignals() map[string]string {
+	signals := make(map[string]string)
+	if s.Plan != "" {
+		signals["plan"] = s.Plan
+	}
+	for _, window := range []struct {
+		key       string
+		remaining int64
+		reset     time.Time
+	}{{"daily", s.DailyQuotaRemainingPercent, s.DailyQuotaResetAt}, {"weekly", s.WeeklyQuotaRemainingPercent, s.WeeklyQuotaResetAt}} {
+		if !window.reset.IsZero() {
+			signals[window.key+"_quota_remaining_percent"] = fmt.Sprintf("%d%%", window.remaining)
+			signals[window.key+"_quota_reset_at"] = window.reset.Format(time.RFC3339)
+		}
+	}
+	for key, at := range map[string]time.Time{"plan_start": s.PlanStart, "plan_end": s.PlanEnd} {
+		if !at.IsZero() {
+			signals[key] = at.Format(time.RFC3339)
+		}
+	}
+	return signals
+}
+
 // GenerateDeviceFingerprint generates a 732-character hex device fingerprint.
 // When seed is empty, it generates a cryptographically random 732-character hex string per request.
 // When seed is provided, it derives a deterministic 732-character hex fingerprint.

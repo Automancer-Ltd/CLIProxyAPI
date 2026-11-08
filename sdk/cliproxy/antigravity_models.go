@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"math/rand/v2"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -366,6 +367,9 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
 		AccessToken: accessToken,
 		ProjectID:   project,
 		UserAgent:   userAgent,
+		TransportDecorator: func(transport http.RoundTripper) http.RoundTripper {
+			return coreauth.GuardHubTransport(transport, auth)
+		},
 	})
 	return antigravityModelCapabilityHints{
 		ModelIDs:          hints.ModelIDs,

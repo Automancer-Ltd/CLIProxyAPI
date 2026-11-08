@@ -9,6 +9,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/hubauth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
@@ -54,11 +55,17 @@ func (s *Service) Run(ctx context.Context) error {
 		s.homeMu.Unlock()
 	}()
 
+	cfg := s.currentConfig()
+	if cfg != nil && cfg.HubAuthority != nil {
+		if _, err := hubauth.ConfigAuths(cfg); err != nil {
+			return err
+		}
+	}
 	s.startModelCatalogUpdaters(ctx)
 
 	usage.StartDefault(ctx)
-	cfg := s.currentConfig()
 	homeEnabled := cfg != nil && cfg.Home.Enabled
+	hubEnabled := cfg != nil && cfg.HubAuthority != nil
 	if homeEnabled {
 		s.cfgMu.Lock()
 		forceHomeRuntimeConfig(s.cfg)
@@ -76,7 +83,7 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 	}()
 
-	if !homeEnabled {
+	if !homeEnabled && !hubEnabled {
 		if errEnsureAuthDir := s.ensureAuthDir(); errEnsureAuthDir != nil {
 			return errEnsureAuthDir
 		}
@@ -86,8 +93,14 @@ func (s *Service) Run(ctx context.Context) error {
 	s.applyRetryConfig(cfg)
 	s.configureCooldownStateStore(cfg)
 
+	if hubEnabled {
+		if err := s.startHub(ctx, cfg); err != nil {
+			return err
+		}
+		s.coreManager.StartAutoRefresh(ctx, 15*time.Minute)
+	}
 	s.registerPluginAuthParser()
-	if s.coreManager != nil && !homeEnabled {
+	if s.coreManager != nil && !homeEnabled && !hubEnabled {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
@@ -106,7 +119,7 @@ func (s *Service) Run(ctx context.Context) error {
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 	}
 
-	if !homeEnabled {
+	if !homeEnabled && !hubEnabled {
 		tokenResult, err := s.tokenProvider.Load(ctx, cfg)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			return err
@@ -200,7 +213,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.hooks.OnAfterStart(s)
 	}
 
-	if !homeEnabled {
+	if !homeEnabled && !hubEnabled {
 		var watcherWrapper *WatcherWrapper
 		reloadCallback := func(newCfg *config.Config) { s.applyWatcherConfigUpdate(newCfg) }
 
@@ -234,7 +247,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	s.registerModelRefreshCallback()
-	if !homeEnabled {
+	if !homeEnabled && !hubEnabled {
 		go s.runAntigravityModelRefresh(ctx)
 	}
 
@@ -271,6 +284,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		s.homeMu.Unlock()
 		if runCancel != nil {
 			runCancel()
+		}
+		if s.hubDone != nil {
+			select {
+			case <-s.hubDone:
+			case <-ctx.Done():
+			}
+		}
+		if s.hubCoordinator != nil {
+			if err := s.hubCoordinator.Stop(ctx); err != nil {
+				shutdownErr = err
+			}
 		}
 
 		s.homeLifecycleMu.Lock()

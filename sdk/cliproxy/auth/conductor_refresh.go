@@ -1385,7 +1385,15 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 	}
 
 	base := auth.Clone()
-	updated, err := exec.Refresh(ctx, base.Clone())
+	var updated *Auth
+	var err error
+	if authority := m.hubAuthority(); authority != nil {
+		updated, err = authority.Refresh(ctx, base.Clone(), func(inner context.Context, a *Auth) (*Auth, error) {
+			return exec.Refresh(context.WithValue(inner, hubRefreshKey{}, hubRefreshPermission{a.HubAccountID, a.HubGeneration}), a)
+		})
+	} else {
+		updated, err = exec.Refresh(ctx, base.Clone())
+	}
 	now := time.Now()
 	if err != nil && errors.Is(err, context.Canceled) && !codex.IsRefreshOutcomeUnknown(err) {
 		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
@@ -1698,6 +1706,35 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 		registry.GetGlobalRegistry().ApplyClientModelProjections(id, regEpoch, targetAuth.Generation, projections)
 	}
 	return saved.Clone(), nil
+}
+
+// RefreshAfterUnauthorized refreshes a credential once after an upstream call made
+// outside request execution (a usage poll, for example) was refused with HTTP 401
+// for failedAccessToken. It returns the credential with a new access token. As on
+// the request path, a refresh refused with invalid_grant or unauthorized marks the
+// credential unauthorized, and one that already carries that mark is not retried.
+func (m *Manager) RefreshAfterUnauthorized(ctx context.Context, id, failedAccessToken string) (*Auth, error) {
+	if m == nil {
+		return nil, errors.New("auth manager is nil")
+	}
+	id = strings.TrimSpace(id)
+	m.mu.RLock()
+	auth := m.auths[id].Clone()
+	m.mu.RUnlock()
+	if auth == nil {
+		return nil, errors.New("auth not found")
+	}
+	if !authHasRefreshCredential(auth) {
+		return nil, errors.New("credential has no refresh token")
+	}
+	refreshed, errRefresh := m.refreshAuthForRequest(ctx, id, failedAccessToken)
+	if errRefresh != nil {
+		return nil, errRefresh
+	}
+	if refreshed == nil || authMatchesTokenPartition(refreshed, failedAccessToken) {
+		return nil, errors.New("refresh kept the rejected access token")
+	}
+	return refreshed, nil
 }
 
 // ForceRefreshAuth triggers an immediate synchronous refresh for the credential.

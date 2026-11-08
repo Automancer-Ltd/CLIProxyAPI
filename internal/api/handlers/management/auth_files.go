@@ -269,7 +269,7 @@ func isAuthFileListable(auth *coreauth.Auth) bool {
 		return false
 	}
 	runtimeOnly := isRuntimeOnlyAuth(auth)
-	if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
+	if isTransientRuntimeOnlyAuth(auth) && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
 		return false
 	}
 	path := strings.TrimSpace(authAttribute(auth, "path"))
@@ -657,7 +657,7 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	}
 	auth.EnsureIndex()
 	runtimeOnly := isRuntimeOnlyAuth(auth)
-	if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
+	if isTransientRuntimeOnlyAuth(auth) && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
 		return nil
 	}
 	path := strings.TrimSpace(authAttribute(auth, "path"))
@@ -688,6 +688,26 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	entry["failed"] = auth.Failed
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
 	entry["quota"] = quotaObservationPayloadForProvider(auth.Provider, auth.Quota)
+	resetAt, usedPercent, spent := coreauth.ConsumeFirstStanding(auth, time.Now())
+	standing := gin.H{"used_percent": usedPercent, "spent": spent}
+	if !resetAt.IsZero() {
+		standing["reset_at"] = resetAt.UTC()
+	}
+	entry["consume_first"] = standing
+	if quota.v8 {
+		entry["usage"] = h.usageEntry(auth)
+	}
+	for _, key := range []string{coreauth.MetadataHoldUntil, coreauth.MetadataGroup} {
+		if value, ok := auth.Metadata[key].(string); ok && strings.TrimSpace(value) != "" {
+			entry[key] = strings.TrimSpace(value)
+		}
+	}
+	if coreauth.AuthPinOnly(auth) {
+		entry[coreauth.MetadataPinOnly] = true
+	}
+	if coreauth.AuthAllowCredits(auth) {
+		entry[coreauth.MetadataAllowCredits] = true
+	}
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas
 	}
@@ -1073,11 +1093,38 @@ func authAttribute(auth *coreauth.Auth, key string) string {
 	return auth.Attributes[key]
 }
 
+// isHubStoreLogin reports a login hydrated from the shared hub store. It is
+// distinct from a hub-bound static route: ConfigureStatic marks config-synthesized
+// API-key routes with the authority but no hub account, and those never leave
+// their config identity in the listing.
+func isHubStoreLogin(auth *coreauth.Auth) bool {
+	return auth != nil && auth.HubAuthority != nil && auth.HubAccountID != ""
+}
+
+// isRuntimeOnlyAuth reports a credential that has no auth file behind it. A
+// credential hydrated from the shared hub store has no path either: it lives in
+// the encrypted store and is materialized at runtime, so the file-oriented
+// listing must treat it as runtime-only or it drops every store-backed login.
 func isRuntimeOnlyAuth(auth *coreauth.Auth) bool {
-	if auth == nil || len(auth.Attributes) == 0 {
+	if auth == nil {
+		return false
+	}
+	if isHubStoreLogin(auth) {
+		return true
+	}
+	if len(auth.Attributes) == 0 {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(auth.Attributes["runtime_only"]), "true")
+}
+
+// isTransientRuntimeOnlyAuth reports a runtime-only credential this process
+// invented, such as a plugin login, rather than one hydrated from the durable
+// hub store. A transient credential disappears on restart, so a disabled one
+// is not listed. A hub credential keeps its stored record and stays listable
+// so its controls can be read and changed.
+func isTransientRuntimeOnlyAuth(auth *coreauth.Auth) bool {
+	return isRuntimeOnlyAuth(auth) && !isHubStoreLogin(auth)
 }
 
 func isUnsafeAuthFileName(name string) bool {

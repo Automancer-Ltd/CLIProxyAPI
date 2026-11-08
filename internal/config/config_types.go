@@ -531,7 +531,8 @@ type QuotaExceeded struct {
 // RoutingConfig configures how credentials are selected for requests.
 type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
-	// Supported values: "round-robin" (default), "weighted-round-robin", "fill-first".
+	// Supported values: "round-robin" (default), "weighted-round-robin", "fill-first",
+	// "consume-first" (soonest allowance reset first; see docs/estate-hub.md).
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
 	// SessionAffinity enables universal session-sticky routing for all clients.
@@ -561,6 +562,20 @@ type RoutingConfig struct {
 	//     auth errors (429, 401/402/403, 404/model support, invalid_grant) rebind as normal.
 	// Ignored when SessionAffinity is false.
 	SessionAffinityRebindOn string `yaml:"session-affinity-rebind-on,omitempty" json:"session-affinity-rebind-on,omitempty"`
+
+	// UsageRefresh polls each credential's provider usage endpoint so idle accounts
+	// keep current allowance figures (see docs/estate-hub.md). Off unless Interval is set.
+	UsageRefresh UsageRefreshConfig `yaml:"usage-refresh,omitempty" json:"usage-refresh,omitempty"`
+}
+
+// UsageRefreshConfig configures the periodic provider usage poll.
+type UsageRefreshConfig struct {
+	// Interval is how often an idle credential is polled, for example "10m".
+	// Empty or zero disables the refresher.
+	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
+	// Providers limits the poll to these providers (claude, codex, kimi, xai,
+	// antigravity, meta). Empty polls every supported provider.
+	Providers []string `yaml:"providers,omitempty" json:"providers,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
@@ -1092,6 +1107,10 @@ type OpenAICompatibility struct {
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+
+	// OneModelAtATime refuses (503) a request for one of this group's models while a request
+	// for a different model of the group is in flight, for a GPU host that swaps models.
+	OneModelAtATime bool `yaml:"one-model-at-a-time,omitempty" json:"one-model-at-a-time,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.

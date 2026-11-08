@@ -85,6 +85,8 @@ type Server struct {
 
 	// management handler
 	mgmt *managementHandlers.Handler
+	// stopUsageRefresh ends the management usage refresher.
+	stopUsageRefresh context.CancelFunc
 
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
@@ -223,6 +225,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
+	usageCtx, stopUsageRefresh := context.WithCancel(context.Background())
+	s.stopUsageRefresh = stopUsageRefresh
+	s.mgmt.StartUsageRefresher(usageCtx)
+	s.mgmt.StartLaneUsage(usageCtx)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
@@ -240,6 +246,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
 	// subscribe-config heartbeat connection is healthy.
 	engine.Use(s.homeHeartbeatMiddleware())
+	// Native hubs run only after the external standby handback has completed.
+	// Shared-mode middleware intercepts this route with its fenced readiness.
+	engine.GET("/hub/ready", func(c *gin.Context) { c.JSON(200, gin.H{"serving": true}) })
 	engine.Use(s.exampleAPIKeySafeModeMiddleware())
 
 	// Setup routes
@@ -420,6 +429,12 @@ func (s *Server) Start() error {
 //   - error: An error if the server fails to stop
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
+	if s.stopUsageRefresh != nil {
+		s.stopUsageRefresh()
+	}
+	if s.mgmt != nil {
+		s.mgmt.FlushLaneUsage()
+	}
 
 	if s.keepAliveEnabled {
 		select {

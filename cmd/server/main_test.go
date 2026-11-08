@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
@@ -298,5 +299,22 @@ func TestPersistSeededConfigRefusesConfigThatKeepsPlaintextSecret(t *testing.T) 
 				t.Fatalf("refused template copy left in place (stat error = %v)", errStat)
 			}
 		})
+	}
+}
+
+func TestServicePluginHostDropsHostForHubAuthority(t *testing.T) {
+	host := pluginhost.New()
+	guarded := &config.Config{HubAuthority: &config.HubAuthorityConfig{Host: "m6"}}
+	if got, err := servicePluginHost(guarded, host, false); got != nil || err != nil {
+		t.Fatalf("servicePluginHost(guarded) = %v, %v, want nil host and no error", got, err)
+	}
+	if _, err := servicePluginHost(guarded, host, true); err == nil {
+		t.Fatal("guarded mode accepted a process that enabled startup plugins")
+	}
+	if got, err := servicePluginHost(&config.Config{}, host, true); got != host || err != nil {
+		t.Fatalf("servicePluginHost(plain) = %v, %v, want the bootstrap host", got, err)
+	}
+	if got, err := servicePluginHost(nil, host, false); got != host || err != nil {
+		t.Fatalf("servicePluginHost(nil cfg) = %v, %v, want the bootstrap host", got, err)
 	}
 }

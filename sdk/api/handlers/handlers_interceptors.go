@@ -724,7 +724,13 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 			Metadata:        nil,
 		}, "")
 		if len(resp.Body) > 0 {
+			// The catalog was filtered for the client key before interceptors ran; an
+			// interceptor may not add back entries the key may not see.
+			allowed := catalogIDs(body)
 			body = cloneBytes(resp.Body)
+			if _, restricted := restrictedAccess(ctx); restricted {
+				body = keepCatalogIDs(body, allowed)
+			}
 		}
 		if resp.Headers != nil {
 			for key, values := range resp.Headers {

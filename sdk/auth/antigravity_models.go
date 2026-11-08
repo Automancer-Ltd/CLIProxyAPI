@@ -53,11 +53,12 @@ func (h AntigravityModelCapabilityHints) Clone() AntigravityModelCapabilityHints
 
 // AntigravityModelProbeRequest configures a single-shot fetchAvailableModels probe.
 type AntigravityModelProbeRequest struct {
-	BaseURLs    []string
-	ProxyURL    string
-	AccessToken string
-	ProjectID   string
-	UserAgent   string
+	BaseURLs           []string
+	ProxyURL           string
+	AccessToken        string
+	ProjectID          string
+	UserAgent          string
+	TransportDecorator func(http.RoundTripper) http.RoundTripper
 }
 
 // FetchAntigravityAvailableModels performs a single-shot POST /v1internal:fetchAvailableModels request
@@ -93,6 +94,10 @@ func FetchAntigravityAvailableModels(ctx context.Context, req AntigravityModelPr
 	if transport != nil {
 		client.Transport = transport
 		defer transport.CloseIdleConnections()
+	}
+
+	if req.TransportDecorator != nil {
+		client.Transport = req.TransportDecorator(client.Transport)
 	}
 
 	doc := ojson.NewDoc([]byte("{}"))

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -66,16 +67,17 @@ type TokenData struct {
 
 // MintedKeyResponse represents the API key response minted from https://api.meta.ai/muse-code/key.
 type MintedKeyResponse struct {
-	APIKey           string `json:"api_key"`
-	BaseURL          string `json:"base_url"`
-	UserEmail        string `json:"user_email"`
-	UserFullName     string `json:"user_full_name"`
-	SubsTierName     string `json:"subs_tier_name"`
-	SubsTierID       string `json:"subs_tier_id"`
-	IsSubsActive     bool   `json:"is_subs_active"`
-	HasPaymentMethod bool   `json:"has_payment_method"`
-	RequirePayment   bool   `json:"require_payment"`
-	CanSubscribe     bool   `json:"can_subscribe"`
+	SubsUsage        json.RawMessage `json:"subs_usage,omitempty"`
+	APIKey           string          `json:"api_key"`
+	BaseURL          string          `json:"base_url"`
+	UserEmail        string          `json:"user_email"`
+	UserFullName     string          `json:"user_full_name"`
+	SubsTierName     string          `json:"subs_tier_name"`
+	SubsTierID       string          `json:"subs_tier_id"`
+	IsSubsActive     bool            `json:"is_subs_active"`
+	HasPaymentMethod bool            `json:"has_payment_method"`
+	RequirePayment   bool            `json:"require_payment"`
+	CanSubscribe     bool            `json:"can_subscribe"`
 }
 
 // MetaAuthBundle packages the token data, minted key, and user metadata.
@@ -453,7 +455,7 @@ func (a *MetaAuth) MintAPIKey(ctx context.Context, dcaToken string) (*MintedKeyR
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := a.httpClient.Do(req)
+	resp, err := baseauth.RefreshClient(ctx, a.httpClient).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("meta auth: mint request failed: %w", err)
 	}

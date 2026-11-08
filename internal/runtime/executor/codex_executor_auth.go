@@ -152,6 +152,9 @@ func resolveCodexAuthDiskPath(cfg *config.Config, auth *cliproxyauth.Auth) (stri
 }
 
 func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if refreshed, handled, err := cliproxyauth.RunHubRefresh(ctx, auth, e.Refresh); handled {
+		return refreshed, err
+	}
 	log.Debugf("codex executor: refresh called")
 	var cfg *config.Config
 	if e != nil {
@@ -165,6 +168,12 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 		return nil, statusErr{code: 500, msg: "codex executor: auth is nil"}
 	}
 
+	if auth.HubAuthority != nil {
+		if siwc, ok := auth.Metadata["siwc"].(map[string]any); ok && len(siwc) > 0 {
+			return nil, fmt.Errorf("hub Codex SIWC mode is not enrolled")
+		}
+		return e.refreshLocked(ctx, auth, "", false)
+	}
 	diskPath, errPath := resolveCodexAuthDiskPath(cfg, auth)
 	if errPath != nil {
 		return nil, errPath
@@ -286,7 +295,8 @@ func (e *CodexExecutor) refreshLocked(ctx context.Context, auth *cliproxyauth.Au
 		needSIWC = false
 	}
 
-	if cliproxyauth.IsForceRefreshContext(ctx) {
+	forceRefresh := cliproxyauth.IsForceRefreshContext(ctx)
+	if forceRefresh {
 		needOuter = hasOuter
 		needSIWC = hasSIWC
 	} else if explicitUnscheduled {
@@ -297,22 +307,23 @@ func (e *CodexExecutor) refreshLocked(ctx context.Context, auth *cliproxyauth.Au
 			needSIWC = hasSIWC
 		}
 	}
-	suppressedRejectedOuter := false
-	if !diskRotatedOuter && auth.RejectedRefreshToken != "" && outerRefreshToken == strings.TrimSpace(auth.RejectedRefreshToken) {
-		if needOuter {
-			suppressedRejectedOuter = true
-		}
+	rejectedOuter := !diskRotatedOuter && auth.RejectedRefreshToken != "" && outerRefreshToken == strings.TrimSpace(auth.RejectedRefreshToken)
+	suppressedRejectedOuter := rejectedOuter && needOuter
+	if rejectedOuter {
 		needOuter = false
 	}
-	suppressedRejectedSIWC := false
-	if !diskRotatedSIWC && auth.RejectedSIWCRefreshToken != "" && siwcRefreshToken == strings.TrimSpace(auth.RejectedSIWCRefreshToken) {
-		if needSIWC {
-			suppressedRejectedSIWC = true
-		}
+	rejectedSIWC := !diskRotatedSIWC && auth.RejectedSIWCRefreshToken != "" && siwcRefreshToken == strings.TrimSpace(auth.RejectedSIWCRefreshToken)
+	suppressedRejectedSIWC := rejectedSIWC && needSIWC
+	if rejectedSIWC {
 		needSIWC = false
 	}
 
 	if !needOuter && !needSIWC {
+		// A forced refresh that finds only an already-rejected grant must not report
+		// success with the stale token: say the credential needs a new sign-in.
+		if forceRefresh && (rejectedOuter || rejectedSIWC) {
+			return nil, statusErr{code: http.StatusUnauthorized, msg: "codex executor: the refresh token was already rejected; sign in again"}
+		}
 		if diskRotatedOuter || diskRotatedSIWC {
 			patch := codexauth.NewCredentialRefreshPatchWithDiskBaseline(beforeRefresh.Metadata, diskBaseline, auth.Metadata, diskRotatedOuter, diskRotatedSIWC)
 			patch.SetUpstreamRefreshed(false)
@@ -392,7 +403,13 @@ func (e *CodexExecutor) refreshLocked(ctx context.Context, auth *cliproxyauth.Au
 				}
 			}
 		} else {
-			td, errOuter := svc.RefreshTokensWithRetry(ctx, outerRefreshToken, 3)
+			var td *codexauth.CodexTokenData
+			var errOuter error
+			if auth.HubAuthority != nil {
+				td, errOuter = svc.RefreshTokensOnce(ctx, outerRefreshToken)
+			} else {
+				td, errOuter = svc.RefreshTokensWithRetry(ctx, outerRefreshToken, 3)
+			}
 			if errOuter != nil {
 				outerErr = errOuter
 			} else if td != nil {

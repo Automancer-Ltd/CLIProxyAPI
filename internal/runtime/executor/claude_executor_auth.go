@@ -147,6 +147,9 @@ func (e *ClaudeExecutor) fetchClaudeOAuthProfile(ctx context.Context, auth *clip
 }
 
 func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if refreshed, handled, err := cliproxyauth.RunHubRefresh(ctx, auth, e.Refresh); handled {
+		return refreshed, err
+	}
 	log.Debugf("claude executor: refresh called")
 	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
 		return refreshed, err
@@ -162,7 +165,13 @@ func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 		return auth, nil
 	}
 	svc := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL)
-	td, err := svc.RefreshTokensWithRetry(ctx, refreshToken, 3)
+	var td *claudeauth.ClaudeTokenData
+	var err error
+	if auth.HubAuthority != nil {
+		td, err = svc.RefreshTokensOnce(ctx, refreshToken)
+	} else {
+		td, err = svc.RefreshTokensWithRetry(ctx, refreshToken, 3)
+	}
 	if err != nil {
 		return nil, err
 	}

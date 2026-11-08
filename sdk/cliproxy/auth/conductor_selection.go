@@ -87,6 +87,10 @@ type authSelectionEligibility struct {
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
+	accountPin       string
+	// providerAccess is the request's Antigravity pairing role; selection skips the
+	// credentials it forbids, and AdmitProvider refuses them at every upstream attempt.
+	providerAccess ProviderAccess
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -106,7 +110,11 @@ func credentialPolicyFromContext(ctx context.Context) string {
 }
 
 func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
-	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata)}
+	eligibility := authSelectionEligibility{
+		disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata),
+		accountPin:       accountPinFromMetadata(opts.Metadata),
+	}
+	eligibility.providerAccess = ProviderAccessFromContext(ctx)
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
@@ -122,6 +130,22 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 		return false
 	}
 	if e.credentialPolicy != "" && !credentialPolicyAllows(e.credentialPolicy, auth) {
+		return false
+	}
+	if e.accountPin != "" && !authMatchesAccountPin(auth, e.accountPin) {
+		return false
+	}
+	if e.accountPin == "" && AuthPinOnly(auth) {
+		return false
+	}
+	if !e.providerAccess.AllowsProvider(auth.Provider) {
+		return false
+	}
+	now := time.Now()
+	if _, held := authHoldUntil(auth, now); held {
+		return false
+	}
+	if _, spent := authIncludedSpentUntil(auth, now); spent {
 		return false
 	}
 	return !e.disallowFreeAuth || !isFreeCodexAuth(auth)

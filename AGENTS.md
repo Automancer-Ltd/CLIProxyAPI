@@ -4,13 +4,16 @@ Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with 
 
 ## Repository
 - GitHub: https://github.com/router-for-me/CLIProxyAPI
+- This checkout is the Automancer-Ltd fork. `gh` resolves to the upstream parent by default, so pass `--repo Automancer-Ltd/CLIProxyAPI` (or run `gh repo set-default Automancer-Ltd/CLIProxyAPI`) before `gh pr create`; a T3 docs PR landed upstream as router-for-me/CLIProxyAPI#7089 on 28 Oct 2026 and had to be closed.
+- The fork's pull request CI is `.github/workflows/estate-ci.yml` (build, then vet and test the changed Go packages). The workflows inherited from upstream are disabled on the fork in its Actions settings, because they retarget pull requests to upstream's `dev`, publish upstream's releases and enforce upstream's contributor rules (t10411, 1 Nov 2026).
 
 ## Commands
 ```bash
 gofmt -w . # Format (required after Go changes)
 go build -o cli-proxy-api ./cmd/server # Build
 go run ./cmd/server # Run dev server
-go test ./... # Run all tests
+go test ./... # Run ordinary tests (local fixtures only)
+go test -tags integration ./internal/discovery # Live LAN multicast checks; use a dedicated test host
 go test -v -run TestName ./path/to/pkg # Run single test
 go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRED after changes)
 ```
@@ -21,6 +24,7 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - `.env` is auto-loaded from the working directory
 - Auth material defaults under `auths/`
 - Storage backends: file-based default; optional Postgres/git/object store (`PGSTORE_*`, `GITSTORE_*`, `OBJECTSTORE_*`)
+- Opt-in shared hub authority: [contract, mode coverage, installation and rollback](docs/plans/hub-credential-authority.md). Run the documented read-only `hub-preflight` before activation. Native-file failover and the one-shot shared export follow [the ops runbook](https://github.com/Automancer-Ltd/automancer-ops/blob/main/docs/hub-failover.md). Shared snapshots are not a safe rollback after native refresh tokens rotate.
 
 ## Architecture
 - `cmd/server/` — Server entrypoint
@@ -58,7 +62,7 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Wrap defer errors: `defer func() { if err := f.Close(); err != nil { log.Errorf(...) } }()`
 - Use logrus structured logging; avoid leaking secrets/tokens in logs
 - Avoid panics in HTTP handlers; prefer logged errors and meaningful HTTP status codes
-- Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go`, and the `cmd/fetch_antigravity_models` utility timeouts
+- Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go` (also used by the usage refresher in `usage_refresh.go`), and the `cmd/fetch_antigravity_models` utility timeouts
 - Avoid wall-clock `time.Sleep` in TTL, expiration, ordering, or cache-eviction unit tests due to platform timer granularity (e.g. Windows default timer resolution of ~15.6ms) and CI jitter under load; prefer controllable clocks (`nowFunc` / mock clock), explicit timestamp manipulation, or deterministic synchronization primitives.
 - Note: if modifying features that involve CLIProxyAPIHome, check if corresponding updates are needed in the CLIProxyAPIHome repository.
 - Endpoints under the `/v0/management` base URL are deprecated and no longer maintained. For any feature changes, do not modify endpoints under `/v0/management` unless necessary to fix compilation errors.

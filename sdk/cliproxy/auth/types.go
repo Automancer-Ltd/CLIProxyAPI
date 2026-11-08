@@ -51,6 +51,12 @@ func GetRequestInfo(ctx context.Context) *RequestInfo {
 
 // Auth encapsulates the runtime state and metadata associated with a single credential.
 type Auth struct {
+	// Hub fields are runtime bindings derived only from the verified encrypted head.
+	HubAccountID  string       `json:"-"`
+	HubGeneration int64        `json:"-"`
+	HubBaseline   []byte       `json:"-"`
+	HubAuthority  HubAuthority `json:"-"`
+
 	// ID uniquely identifies the auth record across restarts.
 	ID string `json:"id"`
 	// RegistrationEpoch tracks monotonic registration cycles across unregister/re-register.

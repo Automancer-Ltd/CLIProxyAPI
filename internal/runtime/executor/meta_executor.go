@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"runtime"
@@ -107,6 +108,9 @@ func (e *MetaExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth,
 
 // Refresh mints an API key from a DCA token if needed.
 func (e *MetaExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if refreshed, handled, err := cliproxyauth.RunHubRefresh(ctx, auth, e.Refresh); handled {
+		return refreshed, err
+	}
 	log.Debugf("meta executor: refresh called")
 	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
 		return refreshed, err
@@ -126,10 +130,17 @@ func (e *MetaExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		}
 	}
 
-	mintRes, err, _ := metaRefreshGroup.Do(dcaToken, func() (any, error) {
+	mint := func() (any, error) {
 		authSvc := metaauth.NewMetaAuthWithProxyURL(e.cfg, auth.ProxyURL)
 		return authSvc.MintAPIKey(ctx, dcaToken)
-	})
+	}
+	var mintRes any
+	var err error
+	if auth.HubAuthority != nil {
+		mintRes, err = mint()
+	} else {
+		mintRes, err, _ = metaRefreshGroup.Do(dcaToken, mint)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("meta executor: mint API key failed: %w", err)
 	}
@@ -166,6 +177,13 @@ func (e *MetaExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		auth.Metadata["subs_tier_id"] = minted.SubsTierID
 	} else {
 		delete(auth.Metadata, "subs_tier_id")
+	}
+	if auth.HubAuthority != nil {
+		var usage any
+		if len(minted.SubsUsage) > 0 {
+			_ = json.Unmarshal(minted.SubsUsage, &usage)
+		}
+		auth.Metadata["subs_usage"] = usage
 	}
 	auth.Metadata["is_subs_active"] = minted.IsSubsActive
 	auth.Metadata["has_payment_method"] = minted.HasPaymentMethod
@@ -256,6 +274,9 @@ func (e *MetaExecutor) ensureAuth(ctx context.Context, auth *cliproxyauth.Auth) 
 		}
 	}
 
+	if auth.HubAuthority != nil {
+		return auth, nil
+	}
 	return e.enrichAuth(auth), nil
 }
 

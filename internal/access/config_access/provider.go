@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
@@ -17,30 +18,40 @@ func Register(cfg *sdkconfig.SDKConfig) {
 	}
 
 	keys := normalizeKeys(cfg.APIKeys)
-	if len(keys) == 0 {
+	paired := normalizeKeys(cfg.AntigravityKeys)
+	if len(keys)+len(paired) == 0 {
 		sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey)
 		return
 	}
 
 	sdkaccess.RegisterProvider(
 		sdkaccess.AccessProviderTypeConfigAPIKey,
-		newProvider(sdkaccess.DefaultAccessProviderName, keys),
+		newProvider(sdkaccess.DefaultAccessProviderName, keys, paired),
 	)
 }
 
 type provider struct {
 	name string
-	keys map[string]struct{}
+	// keys maps each accepted key to its provider-access role, both taken from the
+	// one config snapshot this provider was built from (access.antigravity-keys).
+	keys map[string]coreauth.ProviderAccess
 }
 
-func newProvider(name string, keys []string) *provider {
+func newProvider(name string, keys, antigravityKeys []string) *provider {
 	providerName := strings.TrimSpace(name)
 	if providerName == "" {
 		providerName = sdkaccess.DefaultAccessProviderName
 	}
-	keySet := make(map[string]struct{}, len(keys))
+	ordinary := coreauth.ProviderAccessOpen
+	if len(antigravityKeys) > 0 {
+		ordinary = coreauth.ProviderAccessNoAntigravity
+	}
+	keySet := make(map[string]coreauth.ProviderAccess, len(keys)+len(antigravityKeys))
 	for _, key := range keys {
-		keySet[key] = struct{}{}
+		keySet[key] = ordinary
+	}
+	for _, key := range antigravityKeys {
+		keySet[key] = coreauth.ProviderAccessAntigravityOnly // a key in both lists stays paired
 	}
 	return &provider{name: providerName, keys: keySet}
 }
@@ -89,12 +100,13 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 		if candidate.value == "" {
 			continue
 		}
-		if _, ok := p.keys[candidate.value]; ok {
+		if role, ok := p.keys[candidate.value]; ok {
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),
 				Principal: candidate.value,
 				Metadata: map[string]string{
-					"source": candidate.source,
+					"source":                           candidate.source,
+					coreauth.ProviderAccessMetadataKey: string(role),
 				},
 			}, nil
 		}

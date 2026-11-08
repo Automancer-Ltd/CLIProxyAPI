@@ -239,6 +239,13 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			}
 			executor := executorForAuth(selection.Executor, preparedAuth)
 			execute := func() (cliproxyexecutor.Response, error) {
+				release, errAdmit := m.admitAttempt(execCtx, preparedAuth, execReq.Model, !countTokens)
+				if errAdmit != nil {
+					return cliproxyexecutor.Response{}, errAdmit
+				}
+				if release != nil {
+					defer release()
+				}
 				if countTokens {
 					return executor.CountTokens(executorCtx, preparedAuth, execReq, execOpts)
 				}

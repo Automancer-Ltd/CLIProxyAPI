@@ -137,6 +137,13 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, false)
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
+	normalized, errPairing := m.antigravityPairingProviders(ctx, normalized, authSelectionModelFromOptions(opts, req.Model))
+	if errPairing != nil {
+		return cliproxyexecutor.Response{}, errPairing
+	}
+	if errPin := m.accountPinRefusal(normalized, authSelectionModelFromOptions(opts, req.Model), opts); errPin != nil {
+		return cliproxyexecutor.Response{}, errPin
+	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
@@ -199,6 +206,13 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, true)
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
+	normalized, errPairing := m.antigravityPairingProviders(ctx, normalized, authSelectionModelFromOptions(opts, req.Model))
+	if errPairing != nil {
+		return cliproxyexecutor.Response{}, errPairing
+	}
+	if errPin := m.accountPinRefusal(normalized, authSelectionModelFromOptions(opts, req.Model), opts); errPin != nil {
+		return cliproxyexecutor.Response{}, errPin
+	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
@@ -254,6 +268,16 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+	}
+	if !m.HomeEnabled() {
+		var errPairing error
+		normalized, errPairing = m.antigravityPairingProviders(ctx, normalized, authSelectionModelFromOptions(opts, req.Model))
+		if errPairing != nil {
+			return nil, errPairing
+		}
+		if errPin := m.accountPinRefusal(normalized, authSelectionModelFromOptions(opts, req.Model), opts); errPin != nil {
+			return nil, errPin
+		}
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
@@ -629,7 +653,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
-			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
+			resp, errExec := m.executeAuthorized(execCtx, executor, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -647,7 +671,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
-					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					resp, errExec = m.executeAuthorized(execCtx, executor, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -847,7 +871,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
-			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
+			resp, errExec := m.countAuthorized(execCtx, executor, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -865,7 +889,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
-					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
+					resp, errExec = m.countAuthorized(execCtx, executor, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -1600,6 +1624,9 @@ func (m *Manager) PrepareRequestAuth(ctx context.Context, preparer RequestAuthPr
 	if m == nil || preparer == nil || auth == nil || !preparer.ShouldPrepareRequestAuth(auth) {
 		return auth, nil
 	}
+	if err := m.AuthorizeHub(ctx, auth); err != nil {
+		return nil, err
+	}
 
 	id := strings.TrimSpace(auth.ID)
 	if id == "" {
@@ -2067,6 +2094,9 @@ func (m *Manager) InjectCredentials(req *http.Request, authID string) error {
 		return nil
 	}
 	if p, ok := exec.(RequestPreparer); ok && p != nil {
+		if err := m.AuthorizeHub(req.Context(), a); err != nil {
+			return err
+		}
 		return p.PrepareRequest(req, a)
 	}
 	return nil
@@ -2097,6 +2127,12 @@ func (m *Manager) PrepareHttpRequest(ctx context.Context, auth *Auth, req *http.
 	preparer, ok := exec.(RequestPreparer)
 	if !ok || preparer == nil {
 		return &Error{Code: "not_supported", Message: "executor does not support http request preparation"}
+	}
+	if err := m.AuthorizeHub(req.Context(), auth); err != nil {
+		return err
+	}
+	if err := m.AdmitProvider(req.Context(), auth.Provider); err != nil {
+		return err
 	}
 	return preparer.PrepareRequest(req, auth)
 }
@@ -2145,6 +2181,12 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 	exec := m.executorFor(providerKey)
 	if exec == nil {
 		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
+	}
+	if err := m.AuthorizeHub(ctx, auth); err != nil {
+		return nil, err
+	}
+	if err := m.AdmitProvider(ctx, auth.Provider); err != nil {
+		return nil, err
 	}
 	return exec.HttpRequest(ctx, auth, req)
 }
@@ -2261,14 +2303,24 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 	if auth.RequiresSignIn {
 		return auth, &Error{Code: "sign_in_required", Message: "credential requires sign-in before inference verification", HTTPStatus: http.StatusConflict}
 	}
+	// A verification is a real provider request, so it obeys the same hold and
+	// no-paid-credits rules as every selection path.
+	now := time.Now()
+	if until, held := authHoldUntil(auth, now); held {
+		return auth, &Error{Code: "auth_held", Message: fmt.Sprintf("credential is held until %s", until.UTC().Format(time.RFC3339)), HTTPStatus: http.StatusConflict}
+	}
+	if until, spent := authIncludedSpentUntil(auth, now); spent {
+		return auth, &Error{Code: "included_allowance_spent", Message: fmt.Sprintf("credential's included allowance is used up until %s (paid credits refused)", until.UTC().Format(time.RFC3339)), HTTPStatus: http.StatusConflict}
+	}
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	// Resolve the executor as request execution does: some providers (kimi-ai, OpenAI
+	// compatible) register under a key that differs from auth.Provider.
 	m.mu.RLock()
-	executor := m.executors[provider]
+	executor, _ := m.executorLocked(executorKeyFromAuth(auth))
 	m.mu.RUnlock()
 	if executor == nil {
 		return auth, &Error{Code: "executor_not_found", Message: "executor not registered for provider", HTTPStatus: http.StatusBadRequest}
 	}
-	executor = executorForAuth(executor, auth)
 
 	routeModel := strings.TrimSpace(model)
 	if routeModel == "" {
@@ -2306,17 +2358,28 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 
 	execCtx := newUpstreamAttemptContext(ctx)
 	execCtx = syncMetadataSessionToContext(execCtx, opts.Metadata)
+	// Prepare the credential as request execution does, so state the executor mints
+	// before a request (a Meta API key, for example) is saved instead of discarded.
+	prepared, errPrepare := m.prepareRequestAuth(execCtx, executor, auth)
+	if errPrepare != nil {
+		updated, _ := m.GetByID(auth.ID)
+		return updated, errPrepare
+	}
+	if prepared != nil {
+		auth = prepared
+	}
+	executor = executorForAuth(executor, auth)
 	executionSeq := m.nextExecutionSeq()
 	accessToken := authAccessTokenForRequest(execCtx, auth, opts.Headers)
 	credVersion := auth.CredentialVersion
 	regEpoch := auth.RegistrationEpoch
 
-	streamRes, errStream := executor.ExecuteStream(execCtx, auth, req, opts)
+	streamRes, errStream := m.streamAuthorized(execCtx, executor, auth, req, opts)
 	if errStream != nil {
 		rerr := resultErrorFromError(errStream)
 		if rerr != nil && rerr.HTTPStatus == http.StatusNotImplemented {
 			opts.Stream = false
-			resp, errExec := executor.Execute(execCtx, auth, req, opts)
+			resp, errExec := m.executeAuthorized(execCtx, executor, auth, req, opts)
 			rerrExec := resultErrorFromError(errExec)
 			if rerrExec != nil {
 				rerrExec.Message = sanitizeRenewalMessage(rerrExec.Message)

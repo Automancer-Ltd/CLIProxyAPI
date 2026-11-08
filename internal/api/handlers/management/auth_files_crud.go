@@ -26,6 +26,10 @@ import (
 
 // Download single auth file by name
 func (h *Handler) DownloadAuthFile(c *gin.Context) {
+	if _, shared := h.tokenStoreWithBaseDir().(coreauth.HubAuthority); shared {
+		c.JSON(409, gin.H{"error": "shared auth export requires the verified encrypted head"})
+		return
+	}
 	name := strings.TrimSpace(c.Query("name"))
 	if isUnsafeAuthFileName(name) {
 		c.JSON(400, gin.H{"error": "invalid name"})
@@ -145,6 +149,10 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+	if _, shared := h.tokenStoreWithBaseDir().(coreauth.HubAuthority); shared && c.Query("all") != "" {
+		c.JSON(409, gin.H{"error": "shared credentials require individual removal"})
+		return
+	}
 	if all := c.Query("all"); all == "true" || all == "1" || all == "*" {
 		entries, err := os.ReadDir(h.cfg.AuthDir)
 		if err != nil {
@@ -288,6 +296,10 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err != nil {
 		return err
 	}
+	if _, shared := h.tokenStoreWithBaseDir().(coreauth.HubAuthority); shared {
+		_, err := h.saveTokenRecord(ctx, auth)
+		return err
+	}
 	release := h.beginSIWCFileMutation(ctx, dst)
 	defer release()
 	if errWrite := h.writeAuthFileBytes(dst, data, auth); errWrite != nil {
@@ -396,6 +408,19 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 		return "", http.StatusBadRequest, fmt.Errorf("invalid name")
 	}
 
+	if store := h.tokenStoreWithBaseDir(); store != nil {
+		if _, shared := store.(coreauth.HubAuthority); shared {
+			target := h.findAuthForDelete(name)
+			if target == nil {
+				return name, 404, errAuthFileNotFound
+			}
+			if err := store.Delete(ctx, target.ID); err != nil {
+				return name, 503, err
+			}
+			h.removeAuth(ctx, target.ID)
+			return name, 200, nil
+		}
+	}
 	targetPath := filepath.Join(h.cfg.AuthDir, filepath.Base(name))
 	targetID := ""
 	if targetAuth := h.findAuthForDelete(name); targetAuth != nil {
