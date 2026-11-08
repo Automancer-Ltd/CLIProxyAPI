@@ -11,7 +11,7 @@ This is a proven source incompatibility, not a report of a live failure. t16644 
 ## Inputs and preparation, before any live change
 
 1. Use an interactive session with an independent model route. Read t16638, t16644 and the latest ops `docs/hub-apply.md`, `docs/hub-failover.md`, and this fork's `docs/estate-hub.md`. Confirm t16644's fixture drill passed and its release transaction includes all takeover-capable backups. t15588 determines whether auto-bee is active or still mirror-only; do not assume its role. Do not activate shared `hub-authority`, change routing policy, repin accounts, or rewrite live config as part of this release.
-2. Resolve the merged CLIProxyAPI revision, preserving v8.0.60 ancestry. The prepared source code is `82d600f983f52f153e0ff447793ac67ba9f96171`; later commits change documentation and an unused test variable, with production source unchanged. Rebuild the exact merged revision in a clean checkout rather than trusting a mutable branch or copying a lane's scratch binary:
+2. Resolve the merged CLIProxyAPI revision, preserving v8.0.60 ancestry. The initial integration is `82d600f983f52f153e0ff447793ac67ba9f96171`; the final artifact SHA is in the t16638 result and attached validation receipt. Later commits finish the base64 migration, repair mock CONNECT buffering and fix root-module CI package selection. Rebuild the exact merged revision in a clean checkout rather than trusting a mutable branch or copying a lane's scratch binary:
 
    ```sh
    git clone https://github.com/Automancer-Ltd/CLIProxyAPI.git hub-release-t16638
