@@ -38,8 +38,14 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.sha || 'origin/main' }}
           HUB_PKGS: ./sdk/cliproxy/auth ./internal/api/handlers/management
         run: |
+          # Intersect changed directories with packages owned by the root module.
+          # Upstream also changes nested example modules and testdata fixtures;
+          # passing those paths to root-module go vet/test fails before checks run.
+          go list -f '{{.Dir}}' ./... | sort -u > "$RUNNER_TEMP/root-go-package-dirs"
           pkgs=$( { git diff --name-only "$BASE_REF"...HEAD -- '*.go' | xargs -r -n1 dirname |
-            while read -r dir; do [ -d "$dir" ] && echo "./$dir"; done; printf '%s\n' $HUB_PKGS; } | sort -u)
+            while read -r dir; do [ -d "$dir" ] && realpath "$dir"; done;
+            for pkg in $HUB_PKGS; do realpath "$pkg"; done; } | sort -u |
+            comm -12 - "$RUNNER_TEMP/root-go-package-dirs" | sed "s|^$PWD/|./|")
           echo "$pkgs"
           go vet $pkgs
           go test -count=1 $pkgs
