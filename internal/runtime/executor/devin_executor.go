@@ -1216,7 +1216,7 @@ func (e *DevinExecutor) streamDevinFramesForAuth(
 		_ = completedDoc.Set("interaction.finish_reason", completionFinishReason)
 	}
 	if finalUsage != nil {
-		totalInput := finalUsage.PromptTokens + finalUsage.CachedTokens
+		totalInput := devinTotalInputTokens(finalUsage)
 		totalOutput := finalUsage.CompletionTokens
 		totalTokens := totalInput + totalOutput
 
@@ -1647,7 +1647,7 @@ func consumeDevinFramesToInteractionsForAuth(body io.Reader, model, chatModelUID
 	}
 
 	if finalUsage != nil {
-		totalInput := finalUsage.PromptTokens + finalUsage.CachedTokens
+		totalInput := devinTotalInputTokens(finalUsage)
 		totalOutput := finalUsage.CompletionTokens
 		totalTokens := totalInput + totalOutput
 
@@ -2858,6 +2858,17 @@ func resolveDevinSessionAndCascadeIDs(ctx context.Context, sessionID, cascadeID 
 		cascadeID = normalizeDevinUUID(cascadeID)
 	}
 	return sessionID, cascadeID
+}
+
+// devinTotalInputTokens returns the full prompt size. Devin reports the prompt in
+// three disjoint parts: uncached (field 2), cache write (field 4) and cache read
+// (field 5). A cache miss on the GPT route is almost all cache write, so leaving
+// it out reported a few tokens for a full prompt.
+func devinTotalInputTokens(u *helps.DevinUsage) int64 {
+	if u == nil {
+		return 0
+	}
+	return u.PromptTokens + u.CachedTokens + u.CacheWriteTokens
 }
 
 func normalizeDevinUUID(raw string) string {
