@@ -123,6 +123,13 @@ with a provider name: `opencode run -m <provider>/<id>` splits at the slash, so 
 slash-free. The `opencode-go` models spend the OpenCode Go plan's own allowance; `beam-free` is
 free and mechanical-only in the routing table.
 
+The Qwen Cloud token plan (Individual) is the `qwencloud` group (Waseem, 11 Nov 2026, t18635): `base-url:
+https://token-plan.maas.qwencloudapi.com/compatible-mode/v1`, one `sk-sp-` key (BWS
+`AUT_QWENCLOUD_TOKEN_PLAN_API_KEY`), and only `deepseek-v4.1-flash-1017`, served under the same id for dsh lanes.
+The plan is a monthly Credits pot with no usage API (its figures are only on the Qwen Cloud console), so the
+refresher does not poll it and `/hub` shows it with no bar; when the pot is spent it answers `429
+insufficient_quota`. It sits outside the `deepseek-v4.1-flash` pool on purpose: nothing else spends it.
+
 To check which credential serves an id, read
 `GET /v8/management/credentials/models?name=openai-compatibility:<group>:<id>` for each group
 (the management key applies; send it on stdin, never argv), and make one cold completion (no
