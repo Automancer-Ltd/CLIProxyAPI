@@ -130,6 +130,13 @@ The plan is a monthly Credits pot with no usage API (its figures are only on the
 refresher does not poll it and `/hub` shows it with no bar; when the pot is spent it answers `429
 insufficient_quota`. It sits outside the `deepseek-v4.1-flash` pool on purpose: nothing else spends it.
 
+**Gemini 4 Carbon serves every Argon name** (Waseem, 12 Nov 2026, card t18644). agy 1.5.6 offers Carbon only
+under Google ADC sign-in, not on the hub route lanes use, so the `antigravity` model aliases on m6 send
+`gemini-4-argon` and `gemini-4-argon-high` to upstream `gemini-4-carbon-high`, and rename real Argon to
+`gemini-4-argon-retired`. The factory template, routing table, allowances and the app still say "Argon"; the
+reply's `modelVersion` and the hub log ("upstream served model gemini-4-carbon") show what runs. When agy lists
+Carbon on the hub route, give the lanes a Carbon template and remove these three aliases.
+
 To check which credential serves an id, read
 `GET /v8/management/credentials/models?name=openai-compatibility:<group>:<id>` for each group
 (the management key applies; send it on stdin, never argv), and make one cold completion (no
