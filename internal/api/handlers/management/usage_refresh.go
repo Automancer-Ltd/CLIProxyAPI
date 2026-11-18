@@ -196,7 +196,7 @@ func (h *Handler) pollUsage(ctx context.Context, auth *coreauth.Auth, fetch usag
 	if kind := usageKind(auth); usageUnauthorized(errFetch) && (kind == "claude" || kind == "codex") {
 		// The stored access token can be refused before it expires, and nothing
 		// else refreshes an idle login, so refresh once and read again (t10411).
-		refreshed, errRefresh := h.authManager.RefreshAfterUnauthorized(ctx, auth.ID, token)
+		refreshed, errRefresh := h.authManager.RefreshCredentialAfterUnauthorized(ctx, auth.ID, token)
 		if errRefresh != nil {
 			log.WithError(errRefresh).Warnf("usage refresh: %s %s: token refresh after HTTP 401 failed", auth.Provider, auth.ID)
 			record.Error = errFetch.Error() + "; token refresh failed: " + errRefresh.Error()
