@@ -215,6 +215,15 @@ func TestStoreRejectsUnknownGrantChangesAndPreservesQuarantine(t *testing.T) {
 	if _, err = s.Save(ctx, a); err != nil {
 		t.Fatal(err)
 	}
+	// An Antigravity TOS_VIOLATION deactivation (disabled plus its appeal link) is a status change, not a grant change.
+	list, _ = s.List(ctx)
+	a = list[0]
+	a.Metadata["disabled"] = true
+	a.Metadata["tos_appeal_url"] = "https://fixture.invalid/appeal"
+	a.Metadata["tos_appeal_url_text"] = "Appeal"
+	if _, err = s.Save(ctx, a); err != nil {
+		t.Fatal("TOS deactivation refused as a grant change:", err)
+	}
 	_, accounts, err := s.coordinator.Current(ctx)
 	if err != nil {
 		t.Fatal(err)

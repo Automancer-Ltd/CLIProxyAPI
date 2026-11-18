@@ -36,6 +36,8 @@ var controlKeys = map[string]bool{
 	"note": true, "user_note": true, "priority": true, "weight": true,
 	"request_retry": true, "disable_cooling": true,
 	"antigravity_capability_hints": true,
+	// Antigravity TOS_VIOLATION deactivation records the appeal link with disabled=true; it is a status, not a grant.
+	"tos_appeal_url": true, "tos_appeal_url_text": true,
 }
 
 type storedCredential struct {

@@ -154,6 +154,10 @@ func (h *Handler) Handle(c *gin.Context) {
 		Headers:         c.Request.Header.Clone(),
 		OriginalRequest: reqBody,
 	}
+	// Estate hub: honour the client's account pin (X-CPA-Account) as the other handlers do.
+	if accountPin := strings.TrimSpace(c.GetHeader(coreexecutor.AccountPinHeader)); accountPin != "" {
+		selectionOpts.Metadata = map[string]any{coreexecutor.AccountPinMetadataKey: accountPin}
+	}
 	sanitizedQuery := sanitizeQuery(c.Request.URL.RawQuery)
 	baseReqHeaders := relayRequestHeaders(c.Request.Header)
 	maxRetryCreds := h.authManager.MaxRetryCredentials()
