@@ -44,45 +44,28 @@ Cloudflare Access and reports only the commit; no management key is involved. Af
 `deploy.verify({run: "<run id>"})` and read its verdict with `deploy.get`. `deploy.recent({product:
 "estate-hub"})` lists the retained runs.
 
-The m6 service is `gui/$(id -u)/uk.automancer.hub`; its executable is
-`~/.local/hub/cliproxyapi`. Record the current version and checksum, keep that executable as
-`cliproxyapi.prev-<revision>`, and upload the new binary to a separate staging path. Check its
-checksum and ad-hoc code signature before replacing the executable. Restart with
-`launchctl kickstart -k gui/$(id -u)/uk.automancer.hub`. The first spawn after a replacement can
-fail with `OS_REASON_CODESIGNING`; launchd's KeepAlive retry has recovered it within seconds.
+Do not swap the binary by hand. Release it with the automancer-ops detached transaction
+([hub-journal-release.md](https://github.com/Automancer-Ltd/automancer-ops/blob/main/docs/hub-journal-release.md)),
+the one procedure for a hub binary. It replaces m6, auto-bee and auto-vps together, so a standby cannot refresh a
+Codex grant whose outcome the old binary left unknown, and it rolls all three back if any step fails. A live,
+primary-only swap is refused by `hub-apply.py` for that reason. The kit is installed in
+`~/.local/share/hub-release` on all three hosts (19 Nov 2026, t20576); the auto-bee and auto-vps standby controllers
+are the journal-aware ones.
 
-Hold hub-apply's lock across the replacement and restart, and release it only once `/hub/ready` answers. A
-config apply that is checking its reload when the hub restarts reads the restart as a failed reload and rolls
-its change back. On 18 Nov 2026 (t20568), a binary swap made another session's model-alias apply roll back.
-macOS has no `flock` command, so take the lock in Python on m6. It fails at once while a hub-apply run is live:
+1. Build both candidates from one commit (the two commands above, plus `GOOS=linux GOARCH=amd64 CGO_ENABLED=0`
+   for the Linux one, same `-ldflags`). The commit must contain `internal/auth/codex/refresh_journal_file.go`.
+2. Stage each at `~/.local/state/hub-release/candidate` on its host and take SHA256 from the local build bytes.
+3. Fill the manifest and run `scripts/hub-release.py start` as that document's "Stage and start" says. While
+   the transaction holds its release fence, `hub-apply.py` answers `busy` instead of starting a config reload, so
+   it cannot read the restart as a failed reload. (The 18 Nov 2026 t20568 rollback came from a hand swap with no fence.)
+4. Wait for `result` to report `ok`. `rolled_back` and `rollback_failed` leave the retained state described there.
 
-```bash
-/usr/bin/python3 - <<'PY'
-import fcntl, os, subprocess, time, urllib.request
-lock = open(os.path.expanduser("~/.local/state/hub-apply/lock"), "a")
-fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # BlockingIOError: a hub-apply run is live; wait for its result
-hub = os.path.expanduser("~/.local/hub")
-os.replace(f"{hub}/cliproxyapi.new", f"{hub}/cliproxyapi")  # the checked candidate, staged beside the executable
-subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/uk.automancer.hub"], check=True)
-for _ in range(60):
-    try:
-        if urllib.request.urlopen("http://127.0.0.1:8317/hub/ready", timeout=2).status == 200:
-            break
-    except OSError:
-        pass
-    time.sleep(1)
-PY
-```
-
-After the m6 swap, cross-compile the same commit with `GOOS=linux GOARCH=amd64 CGO_ENABLED=0`,
-keeping the revision build flags above. Install it on both standbys, auto-bee and auto-vps, as
-`~/.local/hub-standby/cliproxyapi`. Do this only while `hub-standby-worker.service` is inactive.
-`hub-standby.service` is the guard and stays active. Keep the old binary as
-`cliproxyapi.prev-<revision>-<timestamp>`. Before an outage relies on a new build, use the spare-port proof in
+The m6 service is `gui/$(id -u)/uk.automancer.hub`, executable `~/.local/hub/cliproxyapi`; the first spawn after a
+replacement can fail with `OS_REASON_CODESIGNING` and launchd's KeepAlive retry has recovered it within seconds.
+The standbys run `~/.local/hub-standby/cliproxyapi`. Before an outage relies on a new build, use the spare-port proof in
 [ops hub-failover.md](https://github.com/Automancer-Ltd/automancer-ops/blob/main/docs/hub-failover.md#spare-port-proof-and-releases).
-Confirm that all three binaries' `--version` lines name the same commit. Then read each guard's
-`hub-standby.service` journal: a healthy tick checks the embedded commits before it mirrors. A
-`primary config and credentials mirrored` line after the install means the commits matched.
+After `ok`, confirm all three `--version` lines name the same commit and read each guard's `hub-standby.service`
+journal: a `primary config and credentials mirrored` line after the install means the commits matched.
 
 Verify the running revision, `/healthz`, `/hub`, and the credential usage response. Compare
 the account inventory before and after, and inspect poll errors. Executor's `hub-readonly.usage`
@@ -95,8 +78,8 @@ passes every header through to that address. m6 has no Go toolchain and no BWS w
 management endpoint, run `bwrun K=AUT_HUB_MANAGEMENT_KEY` on auto-vps (`hc exec --on auto-vps`) and
 send the key to the tailnet address on stdin (`curl -H @-`), never in argv.
 
-Rollback: restore the saved executable over `~/.local/hub/cliproxyapi`, restart the same launch
-agent, and repeat the health and usage checks. The binary update does not require changing the
+Rollback: the transaction rolls back by itself on failure. After an `ok` release you want to undo, run a new
+transaction with the previous revision's candidates; do not copy an old binary back by hand. The binary update does not require changing the
 hub config or credential files.
 
 ## Config
