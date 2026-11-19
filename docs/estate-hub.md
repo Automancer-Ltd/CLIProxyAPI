@@ -51,13 +51,38 @@ checksum and ad-hoc code signature before replacing the executable. Restart with
 `launchctl kickstart -k gui/$(id -u)/uk.automancer.hub`. The first spawn after a replacement can
 fail with `OS_REASON_CODESIGNING`; launchd's KeepAlive retry has recovered it within seconds.
 
+Hold hub-apply's lock across the replacement and restart, and release it only once `/hub/ready` answers. A
+config apply that is checking its reload when the hub restarts reads the restart as a failed reload and rolls
+its change back. On 18 Nov 2026 (t20568), a binary swap made another session's model-alias apply roll back.
+macOS has no `flock` command, so take the lock in Python on m6. It fails at once while a hub-apply run is live:
+
+```bash
+/usr/bin/python3 - <<'PY'
+import fcntl, os, subprocess, time, urllib.request
+lock = open(os.path.expanduser("~/.local/state/hub-apply/lock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # BlockingIOError: a hub-apply run is live; wait for its result
+hub = os.path.expanduser("~/.local/hub")
+os.replace(f"{hub}/cliproxyapi.new", f"{hub}/cliproxyapi")  # the checked candidate, staged beside the executable
+subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/uk.automancer.hub"], check=True)
+for _ in range(60):
+    try:
+        if urllib.request.urlopen("http://127.0.0.1:8317/hub/ready", timeout=2).status == 200:
+            break
+    except OSError:
+        pass
+    time.sleep(1)
+PY
+```
+
 After the m6 swap, cross-compile the same commit with `GOOS=linux GOARCH=amd64 CGO_ENABLED=0`,
-keeping the revision build flags above. Install it on auto-vps as `~/.local/hub-standby/cliproxyapi`
-while `hub-standby.service` is inactive, keeping the old binary as `cliproxyapi.prev-<revision>`.
-Follow [After every m6 hub release: rebuild the standby](https://github.com/Automancer-Ltd/automancer-ops/blob/main/docs/hub-failover.md#after-every-m6-hub-release-rebuild-the-standby)
-for the exact build/install commands, rollback and spare-port proof. Confirm both binaries'
-`--version` lines name the same commit, then check the `hub-failover.service` journal after its
-next hourly build comparison for any mismatch report.
+keeping the revision build flags above. Install it on both standbys, auto-bee and auto-vps, as
+`~/.local/hub-standby/cliproxyapi`. Do this only while `hub-standby-worker.service` is inactive.
+`hub-standby.service` is the guard and stays active. Keep the old binary as
+`cliproxyapi.prev-<revision>-<timestamp>`. Before an outage relies on a new build, use the spare-port proof in
+[ops hub-failover.md](https://github.com/Automancer-Ltd/automancer-ops/blob/main/docs/hub-failover.md#spare-port-proof-and-releases).
+Confirm that all three binaries' `--version` lines name the same commit. Then read each guard's
+`hub-standby.service` journal: a healthy tick checks the embedded commits before it mirrors. A
+`primary config and credentials mirrored` line after the install means the commits matched.
 
 Verify the running revision, `/healthz`, `/hub`, and the credential usage response. Compare
 the account inventory before and after, and inspect poll errors. Executor's `hub-readonly.usage`
