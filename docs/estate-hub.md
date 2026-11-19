@@ -138,12 +138,16 @@ The plan is a monthly Credits pot with no usage API (its figures are only on the
 refresher does not poll it and `/hub` shows it with no bar; when the pot is spent it answers `429
 insufficient_quota`. It sits outside the `deepseek-v4.1-flash` pool on purpose: nothing else spends it.
 
-**Gemini 4 Carbon serves every Argon name** (Waseem, 12 Nov 2026, card t18644). agy 1.5.6 offers Carbon only
-under Google ADC sign-in, not on the hub route lanes use, so the `antigravity` model aliases on m6 send
-`gemini-4-argon` and `gemini-4-argon-high` to upstream `gemini-4-carbon-high`, and rename real Argon to
-`gemini-4-argon-retired`. The factory template, routing table, allowances and the app still say "Argon"; the
-reply's `modelVersion` and the hub log ("upstream served model gemini-4-carbon") show what runs. When agy lists
-Carbon on the hub route, give the lanes a Carbon template and remove these three aliases.
+**Gemini 4 routes** (Waseem, 18 Nov 2026, t20570). Argon is retired outright: `oauth.excluded-models.antigravity`
+on m6 lists `gemini-4-argon*`, and every Argon alias is gone. Carbon is the premium route (high), Neon the medium
+route and Hydrogen the cheap route (both medium); none runs at xhigh by default. Antigravity names Hydrogen and
+Neon only by their ceiling (`gemini-4-hydrogen-xhigh`, `gemini-4-neon-xhigh`; Carbon tops out at `-high`), but the
+level comes from the request: Hydrogen used 600, 1,851 and 5,482 reasoning tokens at low, medium and xhigh for one
+question. agy sends the plain names, so the aliases map `gemini-4-hydrogen` and `gemini-4-neon` to those ids. Neon
+reached the hub through upstream's live catalogue (router-for-me/models) on 18 Nov 23:42 UTC; agy 1.5.11 does not
+list it, so its lane uses `--model gemini-api://gemini-4-neon --effort medium`. The hub-apply registry check uses
+the general client key, which cannot see Antigravity ids: name a non-Antigravity id there and probe Antigravity ids
+with agy's key.
 
 To check which credential serves an id, read
 `GET /v8/management/credentials/models?name=openai-compatibility:<group>:<id>` for each group
@@ -231,7 +235,9 @@ oauth:
   model-alias:
     antigravity:
       - {name: gemini-3.8-flash-high, alias: gemini-3.8-flash, fork: true}
-      - {name: gemini-4-argon-high, alias: gemini-4-argon, fork: true}
+      - {name: gemini-4-carbon-high, alias: gemini-4-carbon, fork: true}
+      - {name: gemini-4-hydrogen-xhigh, alias: gemini-4-hydrogen, fork: true}
+      - {name: gemini-4-neon-xhigh, alias: gemini-4-neon, fork: true}
       - {name: gemini-3.1-flash-lite, alias: gemini-3.1-flash-lite-preview, fork: true}
 ```
 
