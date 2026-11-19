@@ -55,9 +55,9 @@ are the journal-aware ones.
 1. Build both candidates from one commit (the two commands above, plus `GOOS=linux GOARCH=amd64 CGO_ENABLED=0`
    for the Linux one, same `-ldflags`). The commit must contain `internal/auth/codex/refresh_journal_file.go`.
 2. Stage each at `~/.local/state/hub-release/candidate` on its host and take SHA256 from the local build bytes.
-3. Fill the manifest and run `scripts/hub-release.py start` as that document's "Stage and start" says. The
-   transaction takes hub-apply's lock itself, so a config apply cannot read the restart as a failed reload.
-   (The 18 Nov 2026 t20568 rollback came from a hand swap without that lock.)
+3. Fill the manifest and run `scripts/hub-release.py start` as that document's "Stage and start" says. While
+   the transaction holds its release fence, `hub-apply.py` answers `busy` instead of starting a config reload, so
+   it cannot read the restart as a failed reload. (The 18 Nov 2026 t20568 rollback came from a hand swap with no fence.)
 4. Wait for `result` to report `ok`. `rolled_back` and `rollback_failed` leave the retained state described there.
 
 The m6 service is `gui/$(id -u)/uk.automancer.hub`, executable `~/.local/hub/cliproxyapi`; the first spawn after a
