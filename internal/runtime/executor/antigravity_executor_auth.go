@@ -228,7 +228,9 @@ func (e *AntigravityExecutor) refreshTokenWithOptions(ctx context.Context, auth 
 	}
 	if errRefresh != nil {
 		cliproxyexecutor.MarkUpstreamAttempt(requestCtx)
-		return auth, errRefresh
+		if auth.HubAuthority == nil {
+			return auth, errRefresh
+		}
 	}
 	tokenResp, ok := result.(*antigravityTokenRefreshData)
 	if !ok || tokenResp == nil {
@@ -270,7 +272,7 @@ func (e *AntigravityExecutor) refreshTokenWithOptions(ctx context.Context, auth 
 	auth.Metadata["timestamp"] = now.UnixMilli()
 	auth.Metadata["expired"] = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
 	auth.Metadata["type"] = antigravityAuthType
-	if auth.HubAuthority != nil {
+	if auth.HubAuthority != nil || errRefresh != nil {
 		return auth, errRefresh
 	}
 	if discoverProject && !isAntigravityAuthDisabled(auth) {

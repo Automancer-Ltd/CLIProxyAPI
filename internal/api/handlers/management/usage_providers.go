@@ -237,12 +237,12 @@ func usageRequest(ctx context.Context, client *http.Client, method, url string, 
 			log.Errorf("usage refresh: close response body: %v", errClose)
 		}
 	}()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return gjson.Result{}, usageHTTPError{status: resp.StatusCode, retryAfter: resp.Header.Get("Retry-After")}
+	}
 	data, errRead := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if errRead != nil {
 		return gjson.Result{}, fmt.Errorf("read usage response: %w", errRead)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return gjson.Result{}, usageHTTPError{status: resp.StatusCode, retryAfter: resp.Header.Get("Retry-After")}
 	}
 	if !gjson.ValidBytes(data) {
 		return gjson.Result{}, errors.New("usage endpoint returned invalid JSON")

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -486,8 +487,8 @@ func usagePollFailure(record usageRecord, err error, now time.Time, jitter float
 	return record
 }
 func usageRetryAfter(value string, now time.Time) time.Time {
-	if seconds, err := time.ParseDuration(strings.TrimSpace(value) + "s"); err == nil && seconds >= 0 {
-		return now.Add(seconds)
+	if seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil && seconds >= 0 && seconds <= int64((1<<63-1)/time.Second) {
+		return now.Add(time.Duration(seconds) * time.Second)
 	}
 	if date, err := http.ParseTime(value); err == nil && date.After(now) {
 		return date
