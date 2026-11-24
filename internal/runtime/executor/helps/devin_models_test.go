@@ -74,9 +74,9 @@ func TestResolveDevinChatModelUID(t *testing.T) {
 			want:          "swe-2-1-xhigh",
 		},
 		{
-			name:          "dotted swe-2.1 with colon medium",
-			rawModel:      "devin/swe-2.1:medium",
-			want:          "swe-2-1-medium",
+			name:     "dotted swe-2.1 with colon medium",
+			rawModel: "devin/swe-2.1:medium",
+			want:     "swe-2-1-medium",
 		},
 		{
 			name:     "direct swe-2-1-medium unchanged",
