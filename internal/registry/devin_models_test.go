@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -157,6 +159,7 @@ func TestEmbeddedDevinModelsLoadedOnStartup(t *testing.T) {
 	}
 
 	expectedIDs := []string{
+		"devin/swe-2-1",
 		"devin/swe-2",
 		"devin/swe-2-lightning",
 		"devin/swe-1-6-slow",
@@ -448,5 +451,42 @@ func TestValidateDevinModelsJSON_AggregatesThinkingVariants_Issue6141(t *testing
 	expectedLevels := []string{"low", "medium", "high"}
 	if !reflect.DeepEqual(models[0].Thinking.Levels, expectedLevels) {
 		t.Fatalf("expected thinking levels %v, got %v", expectedLevels, models[0].Thinking.Levels)
+	}
+}
+
+// TestEstateDevinCatalog checks estate/devin_models.json, the Devin catalog the estate hubs load through
+// models.devin-catalog: it must validate, keep every embedded (upstream) model, and add SWE-2.1 with its
+// five effort levels so devin/swe-2-1 at medium resolves to swe-2-1-medium.
+func TestEstateDevinCatalog(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "estate", "devin_models.json"))
+	if err != nil {
+		t.Fatalf("read estate catalog: %v", err)
+	}
+	models, err := ValidateDevinModelsJSON(data)
+	if err != nil {
+		t.Fatalf("estate catalog invalid: %v", err)
+	}
+	byID := make(map[string]*ModelInfo, len(models))
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	embedded, err := ValidateDevinModelsJSON(embeddedDevinModelsJSON)
+	if err != nil {
+		t.Fatalf("embedded catalog invalid: %v", err)
+	}
+	for _, m := range embedded {
+		if byID[m.ID] == nil {
+			t.Errorf("estate catalog drops embedded model %q", m.ID)
+		}
+	}
+	swe21 := byID["devin/swe-2-1"]
+	if swe21 == nil {
+		t.Fatal("estate catalog lacks devin/swe-2-1")
+	}
+	if swe21.Thinking == nil || strings.Join(swe21.Thinking.Levels, ",") != "low,medium,high,xhigh,max" {
+		t.Fatalf("devin/swe-2-1 thinking levels = %+v, want low,medium,high,xhigh,max", swe21.Thinking)
+	}
+	if swe21.ContextLength != 262144 || swe21.MaxCompletionTokens != 65536 {
+		t.Fatalf("devin/swe-2-1 limits = %d/%d, want 262144/65536", swe21.ContextLength, swe21.MaxCompletionTokens)
 	}
 }

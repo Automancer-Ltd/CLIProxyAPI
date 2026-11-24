@@ -50,6 +50,40 @@ func TestResolveDevinChatModelUID(t *testing.T) {
 			want:          "swe-2-flash-medium",
 		},
 		{
+			name:          "swe-2-1 with medium effort",
+			rawModel:      "devin/swe-2-1",
+			thinkingLevel: "medium",
+			want:          "swe-2-1-medium",
+		},
+		{
+			name:          "swe-2-1 default to high when no effort",
+			rawModel:      "swe-2-1",
+			thinkingLevel: "",
+			want:          "swe-2-1-high",
+		},
+		{
+			name:          "swe-2-1 low suffix",
+			rawModel:      "swe-2-1(low)",
+			thinkingLevel: "",
+			want:          "swe-2-1-low",
+		},
+		{
+			name:          "swe-2-1 xhigh is its own variant",
+			rawModel:      "swe-2-1",
+			thinkingLevel: "xhigh",
+			want:          "swe-2-1-xhigh",
+		},
+		{
+			name:          "dotted swe-2.1 with colon medium",
+			rawModel:      "devin/swe-2.1:medium",
+			want:          "swe-2-1-medium",
+		},
+		{
+			name:     "direct swe-2-1-medium unchanged",
+			rawModel: "swe-2-1-medium",
+			want:     "swe-2-1-medium",
+		},
+		{
 			name:     "direct swe-2-high unchanged",
 			rawModel: "swe-2-high",
 			want:     "swe-2-high",
