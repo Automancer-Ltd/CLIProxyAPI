@@ -255,7 +255,7 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	})
 
 	httpClient := reporter.TrackHTTPClient(helps.NewDevinHTTPClient(ctx, e.cfg, auth, 0))
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := doDevinRequestWithPreHeaderRetry(ctx, httpClient, httpReq)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		return resp, errDo
@@ -382,7 +382,7 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	})
 
 	httpClient := reporter.TrackHTTPClient(helps.NewDevinHTTPClient(ctx, e.cfg, auth, 0))
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := doDevinRequestWithPreHeaderRetry(ctx, httpClient, httpReq)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		return nil, errDo
@@ -424,6 +424,99 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		Headers: httpResp.Header.Clone(),
 		Chunks:  out,
 	}, nil
+}
+
+// devinPreHeaderRetryAttempts is the number of extra times a request is replayed when
+// Devin's upstream drops the connection before sending any response header.
+const devinPreHeaderRetryAttempts = 3
+
+// devinPreHeaderRetryBackoff is the initial backoff between replays, doubling each round.
+var devinPreHeaderRetryBackoff = 250 * time.Millisecond
+
+// isDevinPreHeaderResetError reports whether err is a connection-level failure that
+// happened before the upstream sent any response header. http.Client.Do returns only
+// after response headers arrive, so any error it returns is by definition pre-header:
+// the response stream has not started and nothing has been streamed to the client.
+// Devin's server (or its edge) occasionally terminates a single connection at this
+// point; the hub then answered the client with 503 and ended whole agent run segments.
+// Only idempotent-in-effect transport failures qualify here: a reset, EOF or broken
+// pipe, never a timeout or a context cancellation.
+func isDevinPreHeaderResetError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	// Envoy-style upstream messages seen on the estate hub: "upstream connect error
+	// or disconnect/reset before headers. reset reason: connection termination".
+	if strings.Contains(msg, "reset before headers") || strings.Contains(msg, "connection termination") {
+		return true
+	}
+	if strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection aborted") ||
+		strings.Contains(msg, "server closed idle connection") {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Err != nil {
+		inner := strings.ToLower(opErr.Err.Error())
+		if strings.Contains(inner, "connection reset") || strings.Contains(inner, "broken pipe") {
+			return true
+		}
+	}
+	return false
+}
+
+// doDevinRequestWithPreHeaderRetry issues the request and, when the upstream resets
+// the connection before any response header, replays it on the same auth a small
+// number of times with a short backoff. Because http.Client.Do returns before any
+// response byte has streamed, the retry only ever happens when nothing has been
+// streamed yet. The replayed request body comes from GetBody, which prepareDevinHTTPRequest
+// guarantees because the body is built from bytes.NewReader.
+func doDevinRequestWithPreHeaderRetry(ctx context.Context, client *http.Client, httpReq *http.Request) (*http.Response, error) {
+	resp, err := client.Do(httpReq)
+	if err == nil || !isDevinPreHeaderResetError(err) {
+		return resp, err
+	}
+	if ctx == nil {
+		ctx = httpReq.Context()
+	}
+	backoff := devinPreHeaderRetryBackoff
+	for attempt := 1; attempt <= devinPreHeaderRetryAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if httpReq.GetBody == nil {
+			return nil, err
+		}
+		body, errBody := httpReq.GetBody()
+		if errBody != nil {
+			return nil, err
+		}
+		retryReq := httpReq.Clone(ctx)
+		retryReq.Body = body
+		log.Warnf("devin executor: upstream reset connection before headers (attempt %d/%d), retrying same login: %v", attempt, devinPreHeaderRetryAttempts, err)
+		resp, err = client.Do(retryReq)
+		if err == nil {
+			return resp, nil
+		}
+		if !isDevinPreHeaderResetError(err) {
+			return nil, err
+		}
+	}
+	return nil, err
 }
 
 func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*http.Request, string, []byte, error) {
