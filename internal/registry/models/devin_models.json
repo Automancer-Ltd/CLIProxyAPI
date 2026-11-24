@@ -1,6 +1,30 @@
 {
   "devin": [
     {
+      "id": "swe-2-1",
+      "object": "model",
+      "type": "devin",
+      "owned_by": "cognition",
+      "display_name": "SWE-2.1",
+      "context_length": 262144,
+      "max_completion_tokens": 65536,
+      "supportedInputModalities": [
+        "text"
+      ],
+      "supportedOutputModalities": [
+        "text"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      }
+    },
+    {
       "id": "swe-2",
       "object": "model",
       "type": "devin",
