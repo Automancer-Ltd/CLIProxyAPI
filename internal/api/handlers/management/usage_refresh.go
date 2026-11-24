@@ -2,11 +2,15 @@ package management
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/sha256"
 	"errors"
+	"fmt"
+	"github.com/MoeForge/moego/json"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,9 +43,14 @@ type usageRecord struct {
 	Balance      *usageBalance          `json:"balance,omitempty"`
 	BankedResets []usageCredit          `json:"banked_resets,omitempty"`
 	// FetchedAt is the last successful poll; AttemptedAt the last try.
-	FetchedAt   time.Time `json:"fetched_at,omitzero"`
-	AttemptedAt time.Time `json:"attempted_at,omitzero"`
-	Error       string    `json:"error,omitempty"`
+	FetchedAt       time.Time `json:"fetched_at,omitzero"`
+	AttemptedAt     time.Time `json:"attempted_at,omitzero"`
+	Error           string    `json:"error,omitempty"`
+	NextPollAt      time.Time `json:"next_poll_at,omitzero"`
+	PollFailures    int       `json:"poll_failures,omitempty"`
+	PollStopped     bool      `json:"poll_stopped,omitempty"`
+	CredentialStamp string    `json:"credential_stamp,omitempty"`
+	WasDisabled     bool      `json:"was_disabled,omitempty"`
 	// Signals and ObservedAt carry the Claude/Codex quota headers across a
 	// restart, so consume-first does not rank every account as unknown.
 	Signals    map[string]string `json:"signals,omitempty"`
@@ -128,6 +137,33 @@ func (h *Handler) refreshUsage(ctx context.Context, now time.Time) {
 			return
 		}
 		record := h.usage.get(auth.ID)
+		stamp := usageCredentialStamp(auth)
+		disabled := auth.Disabled || auth.Status == coreauth.StatusDisabled
+		if record.CredentialStamp != stamp || (record.WasDisabled && !disabled) {
+			record.PollStopped, record.PollFailures, record.NextPollAt = false, 0, time.Time{}
+		}
+		if record.CredentialStamp != stamp || record.WasDisabled != disabled {
+			changed = true
+		}
+		// Upgrade legacy snapshots without immediately retrying every refused account.
+		if record.CredentialStamp == "" && record.Error != "" {
+			if strings.Contains(record.Error, "HTTP 429") || strings.Contains(record.Error, "HTTP 503") {
+				status := 429
+				if strings.Contains(record.Error, "HTTP 503") {
+					status = 503
+				}
+				record = usagePollFailure(record, usageHTTPError{status: status}, now, rand.Float64())
+			} else if strings.Contains(record.Error, "HTTP 401") || strings.Contains(record.Error, "invalid_grant") {
+				record.PollStopped = true
+			}
+		}
+		record.CredentialStamp, record.WasDisabled = stamp, disabled
+		if disabled || auth.RequiresSignIn || usageAuthTerminal(auth) {
+			if !record.PollStopped {
+				changed = true
+			}
+			record.PollStopped = true
+		}
 		observes := coreauth.ProviderSupportsQuotaObservation(auth.Provider)
 		if observes && len(record.Signals) > 0 {
 			// Credentials register after startup, so restoring is retried each pass;
@@ -142,6 +178,9 @@ func (h *Handler) refreshUsage(ctx context.Context, now time.Time) {
 		kind := usageKind(auth)
 		fetch := usageFetchers[kind]
 		every := interval
+		if kind == "claude" {
+			every = max(every, 30*time.Minute)
+		}
 		if kind == "meta" {
 			every = max(every, usageMetaFloor)
 		}
@@ -152,9 +191,12 @@ func (h *Handler) refreshUsage(ctx context.Context, now time.Time) {
 		// An account serving traffic already reports its own headers.
 		busy := observes && now.Sub(observed) < every &&
 			!(kind == "codex" && now.Sub(record.AttemptedAt) >= usageBankedFloor)
-		due := fetch != nil && usageProviderEnabled(cfg, kind) && now.Sub(record.AttemptedAt) >= every && !busy
+		due := !record.PollStopped && !disabled && !now.Before(record.NextPollAt) && fetch != nil && usageProviderEnabled(cfg, kind) && now.Sub(record.AttemptedAt) >= every && !busy
 		if due {
 			record = h.pollUsage(ctx, auth, fetch, record, now)
+			if record.PollFailures == 0 {
+				record.NextPollAt = now.Add(every + usageNormalJitter(auth.ID, every))
+			}
 			changed = true
 		}
 		if current, ok := h.authManager.GetByID(auth.ID); ok && observes && current.Quota.ObservedAt.After(record.ObservedAt) {
@@ -172,6 +214,7 @@ func (h *Handler) pollUsage(ctx context.Context, auth *coreauth.Auth, fetch usag
 	ctx, cancel := context.WithTimeout(ctx, defaultAPICallTimeout)
 	defer cancel()
 	record.AttemptedAt = now
+	// Only poll state changes on failure. Inference/auth cooldowns are independent.
 	if auth.HubAuthority != nil && auth.Provider == "meta" {
 		updated, err := h.authManager.ForceRefreshAuth(ctx, auth.ID)
 		if err != nil || updated == nil {
@@ -188,7 +231,7 @@ func (h *Handler) pollUsage(ctx context.Context, auth *coreauth.Auth, fetch usag
 		errToken = errors.New("no token on the credential")
 	}
 	if errToken != nil {
-		record.Error = "token: " + errToken.Error()
+		record = usagePollFailure(record, fmt.Errorf("token: %w", errToken), now, rand.Float64())
 		return record
 	}
 	client := &http.Client{Transport: h.apiCallTransport(auth, "")}
@@ -199,7 +242,10 @@ func (h *Handler) pollUsage(ctx context.Context, auth *coreauth.Auth, fetch usag
 		refreshed, errRefresh := h.authManager.RefreshCredentialAfterUnauthorized(ctx, auth.ID, token)
 		if errRefresh != nil {
 			log.WithError(errRefresh).Warnf("usage refresh: %s %s: token refresh after HTTP 401 failed", auth.Provider, auth.ID)
-			record.Error = errFetch.Error() + "; token refresh failed: " + errRefresh.Error()
+			record = usagePollFailure(record, fmt.Errorf("%w; token refresh failed: %v", errFetch, errRefresh), now, rand.Float64())
+			if current, ok := h.authManager.GetByID(auth.ID); ok {
+				record.CredentialStamp = usageCredentialStamp(current)
+			}
 			return record
 		}
 		auth, token = refreshed, tokenValueForAuth(refreshed)
@@ -212,7 +258,7 @@ func (h *Handler) pollUsage(ctx context.Context, auth *coreauth.Auth, fetch usag
 	}
 	if errFetch != nil {
 		log.WithError(errFetch).Debugf("usage refresh: %s %s", auth.Provider, auth.ID)
-		record.Error = errFetch.Error()
+		record = usagePollFailure(record, errFetch, now, rand.Float64())
 		return record
 	}
 	if len(result.headers) > 0 {
@@ -221,6 +267,8 @@ func (h *Handler) pollUsage(ctx context.Context, auth *coreauth.Auth, fetch usag
 	if len(result.signals) > 0 {
 		h.authManager.ObserveQuotaSignals(auth.ID, result.signals, now)
 	}
+	record.PollFailures, record.PollStopped = 0, false
+	record.CredentialStamp = usageCredentialStamp(auth)
 	record.Plan, record.Windows, record.Balance, record.FetchedAt, record.Error = result.plan, result.windows, result.balance, now, ""
 	if result.bankedRead {
 		record.BankedResets = result.banked
@@ -318,7 +366,7 @@ func (h *Handler) usageEntry(auth *coreauth.Auth) gin.H {
 	if coreauth.ProviderSupportsQuotaObservation(auth.Provider) && !(strings.EqualFold(auth.Provider, "devin") && len(record.Windows) > 0) {
 		windows = append(coreauth.QuotaUsageWindows(auth.Quota), record.Windows...)
 	}
-	entry := gin.H{"windows": windows}
+	entry := gin.H{"windows": windows, "attempted_at": record.AttemptedAt, "next_poll_at": record.NextPollAt, "poll_stopped": record.PollStopped, "poll_failures": record.PollFailures}
 	if record.Plan != "" {
 		entry["plan"] = record.Plan
 	} else if plan := auth.Quota.Signals["plan"]; plan != "" {
@@ -327,6 +375,7 @@ func (h *Handler) usageEntry(auth *coreauth.Auth) gin.H {
 	}
 	if !record.FetchedAt.IsZero() {
 		entry["fetched_at"] = record.FetchedAt
+		entry["poll_age_seconds"] = max(0, time.Since(record.FetchedAt).Seconds())
 	}
 	if record.Error != "" {
 		entry["error"] = record.Error
@@ -395,4 +444,54 @@ func configCredentialEntry(auth *coreauth.Auth, now time.Time) gin.H {
 		entry["next_retry_after"] = nextRetry
 	}
 	return entry
+}
+
+// Fingerprint only secret material, never runtime quota/errors or modification times.
+func usageCredentialStamp(auth *coreauth.Auth) string {
+	h := sha256.New()
+	for _, key := range []string{"access_token", "refresh_token", "api_key", "dca_token"} {
+		fmt.Fprintf(h, "%s:%v\x00", key, auth.Metadata[key])
+	}
+	fmt.Fprint(h, auth.Attributes["api_key"])
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+func usageAuthTerminal(auth *coreauth.Auth) bool {
+	if auth.LastError != nil && (auth.LastError.HTTPStatus == http.StatusUnauthorized || strings.Contains(strings.ToLower(auth.LastError.Message), "invalid_grant")) {
+		return true
+	}
+	message := strings.ToLower(auth.StatusMessage)
+	return strings.HasPrefix(message, "unauthorized") || strings.Contains(message, "invalid_grant")
+}
+func usageNormalJitter(id string, interval time.Duration) time.Duration {
+	sum := sha256.Sum256([]byte(id))
+	return time.Duration(uint16(sum[0])<<8|uint16(sum[1])) * (interval / 3) / 65536
+}
+func usagePollFailure(record usageRecord, err error, now time.Time, jitter float64) usageRecord {
+	record.Error = err.Error()
+	record.PollFailures++
+	var httpErr usageHTTPError
+	if usageUnauthorized(err) || strings.Contains(strings.ToLower(err.Error()), "invalid_grant") {
+		record.PollStopped = true
+	}
+	if errors.As(err, &httpErr) && (httpErr.status == 429 || httpErr.status == 503) {
+		base := 15 * time.Minute
+		for i := 1; i < record.PollFailures && base < 3*time.Hour; i++ {
+			base *= 2
+		}
+		delay := min(6*time.Hour, time.Duration(float64(base)*(1+max(0, min(1, jitter)))))
+		record.NextPollAt = now.Add(delay)
+		if retry := usageRetryAfter(httpErr.retryAfter, now); retry.After(record.NextPollAt) {
+			record.NextPollAt = retry
+		}
+	}
+	return record
+}
+func usageRetryAfter(value string, now time.Time) time.Time {
+	if seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil && seconds >= 0 && seconds <= int64((1<<63-1)/time.Second) {
+		return now.Add(time.Duration(seconds) * time.Second)
+	}
+	if date, err := http.ParseTime(value); err == nil && date.After(now) {
+		return date
+	}
+	return time.Time{}
 }

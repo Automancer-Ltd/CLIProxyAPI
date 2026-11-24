@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ import (
 
 // A polled Claude account must rank on its weekly reset, and keep that rank after
 // a restart instead of falling back to "unknown" until it serves a request.
-func TestUsageRefreshPollsDisabledAndSurvivesRestart(t *testing.T) {
+func TestUsageRefreshSurvivesRestart(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	now := time.Now()
 	weeklyReset := now.Add(72 * time.Hour).Truncate(time.Second)
@@ -42,7 +43,7 @@ func TestUsageRefreshPollsDisabledAndSurvivesRestart(t *testing.T) {
 	newHandler := func() (*Handler, *coreauth.Manager) {
 		manager := coreauth.NewManager(nil, nil, nil)
 		if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
-			ID: "claude-a.json", Provider: "claude", Disabled: true, Metadata: map[string]any{"access_token": "access"},
+			ID: "claude-a.json", Provider: "claude", Metadata: map[string]any{"access_token": "access"},
 		}); errRegister != nil {
 			t.Fatalf("register: %v", errRegister)
 		}
@@ -51,8 +52,8 @@ func TestUsageRefreshPollsDisabledAndSurvivesRestart(t *testing.T) {
 	assertStanding := func(manager *coreauth.Manager) {
 		t.Helper()
 		auth, _ := manager.GetByID("claude-a.json")
-		if !auth.Disabled {
-			t.Fatal("reading usage must not enable a disabled account")
+		if auth.Disabled {
+			t.Fatal("reading usage must not disable an account")
 		}
 		resetAt, used, spent := coreauth.ConsumeFirstStanding(auth, now)
 		if !resetAt.Equal(weeklyReset) || math.Abs(used-40) > 0.001 || spent {
@@ -357,5 +358,134 @@ func TestUsageRefreshRefreshesTokenOnUnauthorized(t *testing.T) {
 				t.Fatalf("refreshes after the next poll = %d, want still 1", got)
 			}
 		})
+	}
+}
+
+// Retrying a refused usage endpoint can ban an otherwise usable inference login.
+func TestUsagePollBackoffPreservesReading(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	for _, status := range []int{429, 503} {
+		for _, jitter := range []float64{0, .5, 1} {
+			record := usageRecord{Plan: "pro", FetchedAt: now.Add(-time.Hour), Windows: []coreauth.UsageWindow{{UsedPercent: 42}}}
+			for attempt := 0; attempt < 10; attempt++ {
+				record = usagePollFailure(record, usageHTTPError{status: status}, now, jitter)
+				base := min(15*time.Minute*time.Duration(1<<min(attempt, 4)), 4*time.Hour)
+				want := min(6*time.Hour, time.Duration(float64(base)*(1+jitter)))
+				if !record.NextPollAt.Equal(now.Add(want)) {
+					t.Fatalf("status %d attempt %d jitter %v: delay %v want %v", status, attempt, jitter, record.NextPollAt.Sub(now), want)
+				}
+				if record.Plan != "pro" || record.Windows[0].UsedPercent != 42 || !record.FetchedAt.Equal(now.Add(-time.Hour)) || record.PollStopped {
+					t.Fatalf("lost reading: %+v", record)
+				}
+			}
+		}
+	}
+	for _, value := range []string{"28800", now.Add(8 * time.Hour).Format(http.TimeFormat)} {
+		record := usagePollFailure(usageRecord{}, usageHTTPError{status: 429, retryAfter: value}, now, 0)
+		if !record.NextPollAt.Equal(now.Add(8 * time.Hour)) {
+			t.Fatalf("Retry-After %q ignored: %v", value, record.NextPollAt)
+		}
+	}
+	for _, value := range []string{"", "nonsense", "-30", now.Add(-time.Hour).Format(http.TimeFormat)} {
+		if got := usageRetryAfter(value, now); !got.IsZero() {
+			t.Fatalf("malformed/past Retry-After %q accepted: %v", value, got)
+		}
+	}
+	if usageNormalJitter("one", time.Hour) == usageNormalJitter("two", time.Hour) {
+		t.Fatal("accounts not staggered")
+	}
+}
+
+func TestUsageTerminalSuppressionAndRecovery(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	original := usageFetchers["claude"]
+	t.Cleanup(func() { usageFetchers["claude"] = original })
+	calls := 0
+	usageFetchers["claude"] = func(context.Context, *http.Client, *coreauth.Auth, string) (usageResult, error) {
+		calls++
+		return usageResult{}, usageHTTPError{status: 401}
+	}
+	cfg := &config.Config{AuthDir: t.TempDir()}
+	cfg.Routing.UsageRefresh.Interval = "10m"
+	manager := coreauth.NewManager(nil, nil, nil)
+	a, err := manager.Register(context.Background(), &coreauth.Auth{ID: "dead", Provider: "claude", Metadata: map[string]any{"access_token": "old"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandlerWithoutConfigFilePath(cfg, manager)
+	h.refreshUsage(context.Background(), now)
+	first := calls
+	if first == 0 || !h.usage.get(a.ID).PollStopped {
+		t.Fatal("401 did not stop polls")
+	}
+	h.refreshUsage(context.Background(), now.Add(24*time.Hour))
+	if calls != first {
+		t.Fatal("terminal 401 polled again")
+	}
+	// The stop survives a process restart.
+	h = NewHandlerWithoutConfigFilePath(cfg, manager)
+	h.refreshUsage(context.Background(), now.Add(48*time.Hour))
+	if calls != first {
+		t.Fatal("restart retried terminal login")
+	}
+	a, _ = manager.GetByID(a.ID)
+	a.Metadata["access_token"] = "replacement"
+	a.LastError = nil
+	a.StatusMessage = ""
+	a.Status = coreauth.StatusActive
+	if _, err = manager.Update(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	h.refreshUsage(context.Background(), now.Add(49*time.Hour))
+	if calls == first {
+		t.Fatal("replacement credential did not recover polling")
+	}
+}
+
+func TestUsageRequestCapturesRetryAfter(t *testing.T) {
+	for _, status := range []int{429, 503} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Retry-After", "7200")
+			w.WriteHeader(status)
+		}))
+		_, err := usageRequest(context.Background(), server.Client(), http.MethodGet, server.URL, nil, nil)
+		server.Close()
+		var response usageHTTPError
+		if !errors.As(err, &response) || response.retryAfter != "7200" || response.status != status {
+			t.Fatalf("lost response metadata: %v", err)
+		}
+	}
+}
+func TestDisabledUsageNotPolled(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	original := usageFetchers["claude"]
+	t.Cleanup(func() { usageFetchers["claude"] = original })
+	calls := 0
+	usageFetchers["claude"] = func(context.Context, *http.Client, *coreauth.Auth, string) (usageResult, error) {
+		calls++
+		return usageResult{}, nil
+	}
+	cfg := &config.Config{AuthDir: t.TempDir()}
+	cfg.Routing.UsageRefresh.Interval = "10m"
+	manager := coreauth.NewManager(nil, nil, nil)
+	a, err := manager.Register(context.Background(), &coreauth.Auth{ID: "disabled", Provider: "claude", Disabled: true, Metadata: map[string]any{"access_token": "same"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandlerWithoutConfigFilePath(cfg, manager)
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	h.refreshUsage(context.Background(), now)
+	if calls != 0 {
+		t.Fatal("disabled credential was polled")
+	}
+	a.Disabled = false
+	a.Status = coreauth.StatusActive
+	if _, err = manager.Update(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	h.refreshUsage(context.Background(), now.Add(time.Minute))
+	if calls != 1 {
+		t.Fatal("explicit re-enable did not recover polling")
 	}
 }
