@@ -480,7 +480,7 @@ func TestEstateDevinCatalog(t *testing.T) {
 			t.Errorf("estate catalog drops embedded model %q", m.ID)
 		}
 	}
-	swe21 := byID["devin/swe-2-1"]
+	swe21 := byID["swe-2-1"]
 	if swe21 == nil {
 		t.Fatal("estate catalog lacks devin/swe-2-1")
 	}
