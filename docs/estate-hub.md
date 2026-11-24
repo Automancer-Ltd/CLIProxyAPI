@@ -113,8 +113,8 @@ header `x-opencode-session: estate-hub`, and one `api-key`. It serves these ids:
 One hub id can map to more than one upstream: model entries with the same alias in different
 API-key groups form a priority pool. The group with the higher `priority` serves while its
 credential is ready; a refusal cools that credential and the next tier serves the same id. The
-`zai` group carries `priority: 10` and serves `glm-5.3` and `glm-5.3-flash` from the paid GLM
-Coding Plan; the `opencode-go` group (priority 0) registers the same two ids as the fallback
+`zai` group carries `priority: 10` and serves `glm-5.3`, `glm-5.3-flash` and `glm-5.4` from the
+paid GLM Coding Plan; the `opencode-go` group (priority 0) registers the first two as the fallback
 tier, so the hub spends Z.AI first and OpenCode Go only when the plan refuses. This is how
 t14543 made the paid plan reachable from every lane host (2 Nov 2026).
 
