@@ -3,9 +3,9 @@ package management
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -198,7 +198,10 @@ var usageFetchers = map[string]usageFetcher{
 }
 
 // usageHTTPError is a non-2xx reply from a usage endpoint.
-type usageHTTPError struct{ status int }
+type usageHTTPError struct {
+	status     int
+	retryAfter string
+}
 
 func (e usageHTTPError) Error() string {
 	return fmt.Sprintf("usage endpoint returned HTTP %d", e.status)
@@ -239,7 +242,7 @@ func usageRequest(ctx context.Context, client *http.Client, method, url string, 
 		return gjson.Result{}, fmt.Errorf("read usage response: %w", errRead)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return gjson.Result{}, usageHTTPError{status: resp.StatusCode}
+		return gjson.Result{}, usageHTTPError{status: resp.StatusCode, retryAfter: resp.Header.Get("Retry-After")}
 	}
 	if !gjson.ValidBytes(data) {
 		return gjson.Result{}, errors.New("usage endpoint returned invalid JSON")
