@@ -209,6 +209,32 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 	return true
 }
 
+// ineffectiveRefreshDelay returns how long to wait before retrying a refresh
+// that reported success without restoring headroom above the provider's lead.
+// A fixed retry rotates the grant for as long as the credential stays inside
+// the lead, which never settles a token whose expiration cannot be extended and
+// keeps a standby mirror from ever seeing a quiet source. Back off to half the
+// remaining validity instead, so the retry interval shrinks geometrically as
+// expiry approaches, never below refreshIneffectiveBackoff.
+func ineffectiveRefreshDelay(a *Auth, now time.Time) time.Duration {
+	delay := refreshIneffectiveBackoff
+	if a == nil {
+		return delay
+	}
+	expiry, ok := a.ExpirationTime()
+	if !ok || expiry.IsZero() {
+		return delay
+	}
+	remaining := expiry.Sub(now)
+	if remaining <= 0 {
+		return delay
+	}
+	if half := remaining / 2; half > delay {
+		delay = half
+	}
+	return delay
+}
+
 func authPreferredInterval(a *Auth) time.Duration {
 	if a == nil {
 		return 0
@@ -1733,7 +1759,19 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 	}
 	updated.UpdatedAt = now
 	if m.shouldRefresh(updated, now) {
-		updated.NextRefreshAfter = now.Add(refreshIneffectiveBackoff)
+		delay := refreshIneffectiveBackoff
+		if _, hasEvaluator := updated.Runtime.(RefreshEvaluator); !hasEvaluator {
+			delay = ineffectiveRefreshDelay(updated, now)
+		}
+		updated.NextRefreshAfter = now.Add(delay)
+		if delay > refreshIneffectiveBackoff {
+			log.WithFields(log.Fields{
+				"auth_id":    updated.ID,
+				"credential": updated.ID,
+				"provider":   updated.Provider,
+				"retry_in":   delay.String(),
+			}).Warnf("refresh succeeded without restoring headroom; next attempt in %s", delay)
+		}
 	}
 	// A successful refresh may have rotated upstream tokens after cancellation.
 	// Commit its result with context values intact; keep epoch checks and save ordering.
