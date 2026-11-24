@@ -171,6 +171,20 @@ in-place edits reload without a restart. Confirm `config file changed, reloading
 `hub-authority` mode deliberately disables this watcher; use the coordinated restart procedure
 until native-file mode is installed. A healthy HTTP response alone does not prove a reload.
 
+## Devin catalogue: SWE-2.1 (t17486)
+
+Devin models reach the hub through the Devin catalogue, which a hub on `models.devin-catalog: ""` reads
+from upstream (`router-for-me/models`) at start and every 3 hours, replacing the copy embedded in the
+binary. SWE-2.1 (released 24 Nov 2026) is not in upstream's catalogue yet, so the estate serves
+`estate/devin_models.json` (upstream plus `swe-2-1`) by pointing `models.devin-catalog` at its raw
+GitHub URL; see [estate/README.md](../estate/README.md). The resolver needs no change: `devin/swe-2-1`
+at `medium` becomes Devin's `swe-2-1-medium`, and with no effort it defaults to `swe-2-1-high`, as for
+SWE-2. SWE-2.1 Lightning is paid on the Pro plan and is not in the catalogue.
+
+The catalogue source is hot-reloaded with the config, so switching it needs no binary swap or restart:
+edit the `models:` block in place, confirm `config file changed, reloading` in `~/Library/Logs/hub.log`,
+then `GET /v1/models` lists `devin/swe-2-1`. Undo by setting `devin-catalog: ""` again.
+
 ## Antigravity is agy's alone (t15617)
 
 Waseem's Antigravity allowance is spent only by agy (decision 2.5 B). agy runs in API-key mode
