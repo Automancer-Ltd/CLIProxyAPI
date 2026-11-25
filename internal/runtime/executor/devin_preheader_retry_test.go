@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -262,5 +263,70 @@ func TestDevinPreHeaderRetryReplaysSameBody(t *testing.T) {
 		if bodies[0][i] != bodies[1][i] {
 			t.Fatalf("replayed body differs at byte %d", i)
 		}
+	}
+}
+
+func TestDevinEnvoyReset503Retry(t *testing.T) {
+	previous := devinPreHeaderRetryBackoff
+	devinPreHeaderRetryBackoff = time.Millisecond
+	defer func() { devinPreHeaderRetryBackoff = previous }()
+	const envoy = "upstream connect error or disconnect/reset before headers. reset reason: connection termination"
+	for _, tc := range []struct {
+		name               string
+		stream             bool
+		body               string
+		failures, wantHits int
+		wantErr            bool
+	}{
+		{"execute recovers", false, envoy, 2, 3, false},
+		{"stream recovers", true, envoy, 2, 3, false},
+		{"exhausted", false, envoy, 3, 3, true},
+		{"unrelated 503", true, "other unavailable", 3, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			var firstBody string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				if hits.Add(1) == 1 {
+					firstBody = string(body)
+				} else if string(body) != firstBody {
+					t.Error("replayed request body changed")
+				}
+				if int(hits.Load()) <= tc.failures {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = io.WriteString(w, tc.body)
+					return
+				}
+				w.Header().Set("Content-Type", "application/connect+proto")
+				_, _ = w.Write(devinContentTextResponse("recovered"))
+			}))
+			defer server.Close()
+			exec := NewDevinExecutor(&config.Config{})
+			req, opts := devinPreHeaderRetryRequest()
+			var err error
+			if tc.stream {
+				var stream *cliproxyexecutor.StreamResult
+				stream, err = exec.ExecuteStream(context.Background(), devinPreHeaderRetryAuth(server), req, opts)
+				if err == nil {
+					for chunk := range stream.Chunks {
+						if chunk.Err != nil {
+							t.Errorf("stream: %v", chunk.Err)
+						}
+					}
+				}
+			} else {
+				_, err = exec.Execute(context.Background(), devinPreHeaderRetryAuth(server), req, opts)
+			}
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error = %v, want error %v", err, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), tc.body) {
+				t.Errorf("error did not preserve response: %v", err)
+			}
+			if got := int(hits.Load()); got != tc.wantHits {
+				t.Errorf("hits = %d, want %d", got, tc.wantHits)
+			}
+		})
 	}
 }
