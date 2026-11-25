@@ -255,7 +255,7 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	})
 
 	httpClient := reporter.TrackHTTPClient(helps.NewDevinHTTPClient(ctx, e.cfg, auth, 0))
-	httpResp, errDo := doDevinRequestWithPreHeaderRetry(ctx, httpClient, httpReq)
+	httpResp, errDo := doDevinRequestWithResetRetry(ctx, httpClient, httpReq)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		return resp, errDo
@@ -382,7 +382,7 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	})
 
 	httpClient := reporter.TrackHTTPClient(helps.NewDevinHTTPClient(ctx, e.cfg, auth, 0))
-	httpResp, errDo := doDevinRequestWithPreHeaderRetry(ctx, httpClient, httpReq)
+	httpResp, errDo := doDevinRequestWithResetRetry(ctx, httpClient, httpReq)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		return nil, errDo
@@ -424,6 +424,41 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		Headers: httpResp.Header.Clone(),
 		Chunks:  out,
 	}, nil
+}
+
+// doDevinRequestWithResetRetry also handles Envoy's 503 response when its
+// connection to Devin failed before headers. No response has reached the caller.
+func doDevinRequestWithResetRetry(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {
+	const retries = 2
+	for attempt := 0; ; attempt++ {
+		resp, err := doDevinRequestWithPreHeaderRetry(ctx, client, req)
+		if err != nil || resp.StatusCode != http.StatusServiceUnavailable || attempt == retries {
+			return resp, err
+		}
+		// Preserve the body for the normal error path, including any unread bytes.
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(body), resp.Body), resp.Body}
+		if readErr != nil || !bytes.Contains(body, []byte("upstream connect error or disconnect/reset before headers")) || req.GetBody == nil {
+			return resp, nil
+		}
+		replay, bodyErr := req.GetBody()
+		if bodyErr != nil {
+			return resp, nil
+		}
+		select {
+		case <-ctx.Done():
+			_ = replay.Close()
+			return resp, nil
+		case <-time.After(devinPreHeaderRetryBackoff << attempt):
+		}
+		_ = resp.Body.Close()
+		req = req.Clone(ctx)
+		req.Body = replay
+		log.WithField("reason", "upstream_reset_503").Warnf("devin executor: retrying same login after upstream reset 503 (attempt %d/%d)", attempt+1, retries)
+	}
 }
 
 // devinPreHeaderRetryAttempts is the number of extra times a request is replayed when
